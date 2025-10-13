@@ -11,8 +11,14 @@
     "typecheck": "tsc --noEmit -p tsconfig.app.json"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.57.4",
+    "@storacha/client": "^1.8.2",
+    "@ucanto/client": "file:/Users/nandi/ucanto-with-errors/packages/client",
+    "@ucanto/core": "file:/Users/nandi/ucanto-with-errors/packages/core",
+    "@ucanto/interface": "file:/Users/nandi/ucanto-with-errors/packages/interface",
+    "@ucanto/principal": "file:/Users/nandi/ucanto-with-errors/packages/principal",
+    "cbor-web": "^9.0.1",
     "lucide-react": "^0.344.0",
+    "multiformats": "^13.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
@@ -30,6 +36,7 @@
     "tailwindcss": "^3.4.1",
     "typescript": "^5.5.3",
     "typescript-eslint": "^8.3.0",
-    "vite": "^5.4.2"
+    "vite": "^5.4.2",
+    "vite-plugin-node-polyfills": "^0.24.0"
   }
 }

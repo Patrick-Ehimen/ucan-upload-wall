@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { UploadResponse, UploadError } from '../types/upload';
+import { UCANDelegationService } from '../lib/ucan-delegation';
 
-const API_BASE_URL = 'http://localhost:8787';
+const delegationService = new UCANDelegationService();
 
 export function useFileUpload() {
   const [isUploading, setIsUploading] = useState(false);
@@ -12,21 +13,21 @@ export function useFileUpload() {
     setError(null);
 
     try {
-      const formData = new FormData();
-      formData.append('file', file);
-
-      const response = await fetch(`${API_BASE_URL}/api/upload`, {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!response.ok) {
-        const errorData: UploadError = await response.json();
-        throw new Error(errorData.error || 'Upload failed');
+      // Check if setup is complete
+      if (!delegationService.isSetupComplete()) {
+        throw new Error('Setup incomplete. Please add your Storacha credentials first.');
       }
 
-      const data: UploadResponse = await response.json();
-      return data;
+      // Initialize WebAuthn DID if needed
+      await delegationService.initializeWebAuthnDID();
+
+      // Upload file using browser-only Storacha client
+      const result = await delegationService.uploadFile(file);
+      
+      return {
+        ok: true,
+        cid: result.cid
+      };
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Upload failed';
       setError(message);
@@ -36,5 +37,5 @@ export function useFileUpload() {
     }
   };
 
-  return { uploadFile, isUploading, error };
+  return { uploadFile, isUploading, error, delegationService };
 }

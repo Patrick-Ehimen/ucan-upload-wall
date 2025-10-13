@@ -22,9 +22,13 @@ export function Alert({ type, message, onClose }: AlertProps) {
       ) : (
         <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
       )}
-      <p className={`flex-1 text-sm font-medium ${isSuccess ? 'text-green-800' : 'text-red-800'}`}>
-        {message}
-      </p>
+      <div className={`flex-1 text-sm ${isSuccess ? 'text-green-800' : 'text-red-800'}`}>
+        {message.split('\n').map((line, index) => (
+          <div key={index} className={index === 0 ? 'font-medium' : 'font-normal mt-1'}>
+            {line}
+          </div>
+        ))}
+      </div>
       <button
         onClick={onClose}
         className={`
