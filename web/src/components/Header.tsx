@@ -7,7 +7,7 @@ export function Header() {
             🔐 UCAN Upload Wall <span className="text-lg text-blue-600">(Browser-Only)</span>
           </h1>
           <p className="text-sm text-gray-600">
-            WebAuthn DID + Storacha Network • No Servers • Full P2P • Hardware-Secured
+            WebAuthn DID + Storacha Network • UCAN Delegation • No Servers • 
           </p>
         </div>
       </div>
