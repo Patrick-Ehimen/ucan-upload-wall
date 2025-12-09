@@ -729,9 +729,56 @@ export class UCANDelegationService {
       console.log('Importing delegation...');
       let delegationInfo: DelegationInfo;
       
+      // First, try to parse directly as CAR format (no base64 decoding)
+      // This handles tokens that are already in binary CAR format
       try {
-        // Try to decode base64 first
-        const decodedArrayBuffer = this.base64ToArrayBuffer(delegationProof);
+        console.log('Attempting to parse as raw CAR format...');
+        const carBytes = new TextEncoder().encode(delegationProof);
+        const { extract } = await import('@le-space/ucanto-core/delegation');
+        const extractResult = await extract(carBytes);
+        
+        let delegation;
+        if (extractResult && extractResult.ok) {
+          delegation = extractResult.ok;
+        } else if (extractResult && !extractResult.error) {
+          delegation = extractResult;
+        }
+        
+        if (delegation && delegation.audience) {
+          const ourDid = this.getCurrentDID();
+          const audienceDid = typeof delegation.audience.did === 'function' 
+            ? delegation.audience.did() 
+            : delegation.audience;
+          const issuerDid = typeof delegation.issuer.did === 'function'
+            ? delegation.issuer.did()
+            : delegation.issuer;
+          
+          if (audienceDid !== ourDid) {
+            throw new Error(`This delegation is not for your current DID. Expected: ${ourDid}, Got: ${audienceDid}`);
+          }
+          
+          delegationInfo = {
+            id: delegation.cid?.toString() || crypto.randomUUID(),
+            fromIssuer: String(issuerDid),
+            toAudience: audienceDid,
+            proof: delegationProof,
+            capabilities: Array.isArray(delegation.capabilities) 
+              ? delegation.capabilities.map((cap: any) => cap.can || cap.capability || cap)
+              : ['space/blob/add', 'upload/add'],
+            createdAt: new Date().toISOString(),
+            expiresAt: delegation.expiration ? new Date(delegation.expiration * 1000).toISOString() : undefined
+          };
+          
+          console.log('✅ Successfully parsed raw CAR format');
+        } else {
+          throw new Error('Invalid CAR format');
+        }
+      } catch (rawCarError) {
+        console.log('Not raw CAR format, trying base64 decoding...');
+        
+        try {
+          // Try to decode base64 first
+          const decodedArrayBuffer = this.base64ToArrayBuffer(delegationProof);
         
         // Try to parse as JSON (for our fallback format or ucanto result format)
         try {
@@ -888,9 +935,10 @@ export class UCANDelegationService {
             throw new Error('Invalid UCAN delegation format - missing delegation or audience');
           }
         } catch (carError) {
-          console.error('Both JSON and CAR parsing failed');
-          throw new Error(`Invalid delegation format. JSON: ${(jsonError as Error).message}. CAR: ${(carError as Error).message}`);
+          console.error('All parsing attempts failed');
+          throw new Error(`Invalid delegation format. Raw CAR: ${(rawCarError as Error).message}. JSON: ${(jsonError as Error).message}. Base64 CAR: ${(carError as Error).message}`);
         }
+      }
       }
 
       // Store received delegation
