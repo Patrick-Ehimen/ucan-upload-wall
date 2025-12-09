@@ -727,15 +727,37 @@ export class UCANDelegationService {
       }
 
       console.log('Importing delegation...');
+      console.log('Token length:', delegationProof.length, 'First chars:', delegationProof.substring(0, 20));
       let delegationInfo: DelegationInfo;
       
-      // First, try to parse directly as CAR format (no base64 decoding)
-      // This handles tokens that are already in binary CAR format
+      // Check if it's multibase encoded (starts with 'm' for base64 multibase)
+      let tokenBytes: Uint8Array;
+      if (delegationProof.startsWith('m')) {
+        console.log('Detected multibase encoding, decoding...');
+        try {
+          // Remove 'm' prefix and decode as base64url
+          const base64urlPart = delegationProof.substring(1);
+          const standardBase64 = this.base64urlToBase64(base64urlPart);
+          const binary = atob(standardBase64);
+          tokenBytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) {
+            tokenBytes[i] = binary.charCodeAt(i);
+          }
+          console.log('Multibase decoded successfully, bytes length:', tokenBytes.length);
+        } catch (multibaseError) {
+          console.error('Multibase decoding failed:', multibaseError);
+          throw multibaseError;
+        }
+      } else {
+        // Try as raw text first
+        tokenBytes = new TextEncoder().encode(delegationProof);
+      }
+      
+      // Try to parse as CAR format
       try {
-        console.log('Attempting to parse as raw CAR format...');
-        const carBytes = new TextEncoder().encode(delegationProof);
+        console.log('Attempting to parse as CAR format...');
         const { extract } = await import('@le-space/ucanto-core/delegation');
-        const extractResult = await extract(carBytes);
+        const extractResult = await extract(tokenBytes);
         
         let delegation;
         if (extractResult && extractResult.ok) {
