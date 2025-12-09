@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
-import { Share, Copy, Check, Plus, Users, Download, Upload, Shield, Trash2, ArrowRight, User, Clock, Key } from 'lucide-react';
+import { Share, Copy, Check, Plus, Download, Upload, Shield, Trash2, ArrowRight, User, Clock, Key } from 'lucide-react';
 import { UCANDelegationService, DelegationInfo } from '../lib/ucan-delegation';
 
 interface DelegationManagerProps {
   delegationService: UCANDelegationService;
+  onDidCreated?: () => void;
 }
 
 export function DelegationManager({ delegationService }: DelegationManagerProps) {
@@ -19,30 +20,58 @@ export function DelegationManager({ delegationService }: DelegationManagerProps)
   const [showDelegationProof, setShowDelegationProof] = useState(false);
   const [createdDelegationProof, setCreatedDelegationProof] = useState('');
   const [selectedCapabilities, setSelectedCapabilities] = useState<string[]>([
-    'space/blob/add', 'space/blob/list', 'upload/add', 'upload/list'
+    'space/blob/add', 'upload/add'
   ]);
+  const [expirationHours, setExpirationHours] = useState<number | null>(24);
+  const [credentials, setCredentials] = useState({
+    key: '',
+    proof: '',
+    spaceDid: ''
+  });
+  const [savedCredentials, setSavedCredentials] = useState(false);
+  const [showCredentialsForm, setShowCredentialsForm] = useState(false);
 
   // Available capabilities with descriptions
   const availableCapabilities = [
     { id: 'space/blob/add', label: 'Upload Files', description: 'Add files to the space', category: 'Upload' },
-    { id: 'space/blob/list', label: 'List Files (Space)', description: 'List files in the space', category: 'List' },
     { id: 'space/blob/remove', label: 'Delete Files (Space)', description: 'Remove files from the space', category: 'Delete' },
     { id: 'upload/add', label: 'Upload Files (Alt)', description: 'Alternative upload capability', category: 'Upload' },
-    { id: 'upload/list', label: 'List Files (Upload)', description: 'List uploaded files', category: 'List' },
     { id: 'upload/remove', label: 'Delete Files (Upload)', description: 'Remove uploaded files', category: 'Delete' },
     { id: 'store/add', label: 'Store Data', description: 'Store data in the space', category: 'Store' },
-    { id: 'store/list', label: 'List Stored Data', description: 'List stored data', category: 'Store' },
     { id: 'store/remove', label: 'Remove Stored Data', description: 'Remove stored data', category: 'Store' }
   ];
 
   useEffect(() => {
     loadData();
-  }, []);
+    
+    // Load existing credentials
+    const existing = delegationService.getStorachaCredentials();
+    if (existing) {
+      setCredentials(existing);
+      setSavedCredentials(true);
+    }
+  }, [delegationService]);
 
   const loadData = () => {
     setCurrentDID(delegationService.getCurrentDID());
     setCreatedDelegations(delegationService.getCreatedDelegations());
     setReceivedDelegations(delegationService.getReceivedDelegations());
+  };
+
+  const handleCredentialChange = (field: keyof typeof credentials, value: string) => {
+    setCredentials(prev => ({ ...prev, [field]: value }));
+  };
+
+  const handleSaveCredentials = () => {
+    if (!credentials.key || !credentials.proof || !credentials.spaceDid) {
+      alert('Please fill in all credential fields');
+      return;
+    }
+
+    delegationService.storeStorachaCredentials(credentials);
+    setSavedCredentials(true);
+    setShowCredentialsForm(false);
+    alert('Credentials saved successfully!');
   };
 
   const handleCreateDelegation = async () => {
@@ -60,7 +89,8 @@ export function DelegationManager({ delegationService }: DelegationManagerProps)
     try {
       console.log('🔄 Creating delegation for target DID:', targetDID);
       console.log('🛠️ Selected capabilities:', selectedCapabilities);
-      const delegationProof = await delegationService.createDelegation(targetDID, selectedCapabilities);
+      console.log('⏰ Expiration:', expirationHours, 'hours');
+      const delegationProof = await delegationService.createDelegation(targetDID, selectedCapabilities, expirationHours);
       console.log('✅ Delegation created, proof length:', delegationProof?.length || 0);
       console.log('📄 Delegation proof preview:', delegationProof?.substring(0, 100) + '...');
       
@@ -142,52 +172,188 @@ export function DelegationManager({ delegationService }: DelegationManagerProps)
     <div className="max-w-6xl mx-auto p-6 space-y-8">
       <div className="text-center">
         <h2 className="text-3xl font-bold text-gray-900 mb-3">
-          UCAN Delegations
+          Setup Your Ed25519 DID & Upload Access
         </h2>
         <p className="text-gray-600">
-          Manage delegations to share upload capabilities across browsers
+          Import a UCAN delegation token to get upload access, or add Storacha credentials directly
         </p>
       </div>
 
-      {/* Current DID */}
+      {/* Current Ed25519 DID - Most Important! */}
       {currentDID && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+        <div className="bg-gradient-to-r from-blue-50 to-purple-50 border-2 border-blue-300 rounded-lg p-6 shadow-sm">
           <div className="flex items-center justify-between">
-            <div className="flex items-center">
-              <Shield className="h-5 w-5 text-blue-500 mr-3" />
-              <div>
-                <h3 className="text-blue-800 font-medium">Your DID</h3>
-                <code className="text-sm text-blue-700 break-all">{currentDID}</code>
+            <div className="flex items-center flex-1">
+              <Shield className="h-6 w-6 text-blue-600 mr-3" />
+              <div className="flex-1">
+                <h3 className="text-lg font-bold text-blue-900 mb-1">Your Hardware-Protected Ed25519 DID</h3>
+                <p className="text-sm text-blue-700 mb-2">Share this DID to receive UCAN delegations</p>
+                <code className="text-sm text-blue-800 break-all bg-white/60 px-3 py-2 rounded border border-blue-200 block">{currentDID}</code>
               </div>
             </div>
             <button
               onClick={() => copyToClipboard(currentDID, 'current-did')}
-              className="flex items-center text-blue-600 hover:text-blue-800"
+              className="ml-4 flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
             >
-              {copiedField === 'current-did' ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+              {copiedField === 'current-did' ? (
+                <><Check className="h-4 w-4 mr-2" /> Copied!</>
+              ) : (
+                <><Copy className="h-4 w-4 mr-2" /> Copy DID</>
+              )}
             </button>
           </div>
         </div>
       )}
 
-      {/* Actions */}
-      <div className="flex flex-wrap gap-4">
-        <button
-          onClick={() => setShowCreateForm(true)}
-          className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 flex items-center"
-        >
-          <Plus className="h-4 w-4 mr-2" />
-          Create Delegation
-        </button>
+      {/* Primary Action: Import UCAN Token */}
+      <div className="bg-white rounded-lg border-2 border-green-300 p-6 shadow-sm">
+        <div className="flex items-center mb-4">
+          <Download className="h-6 w-6 text-green-600 mr-3" />
+          <div>
+            <h3 className="text-xl font-bold text-gray-900">Import UCAN Delegation Token</h3>
+            <p className="text-sm text-gray-600">Recommended: Paste your UCAN token to get upload access</p>
+          </div>
+        </div>
+        
+        {receivedDelegations.length > 0 ? (
+          <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-4">
+            <p className="text-green-800 text-sm font-medium">
+              ✓ You have {receivedDelegations.length} active UCAN delegation(s). You can upload files!
+            </p>
+          </div>
+        ) : null}
         
         <button
-          onClick={() => setShowImportForm(true)}
-          className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 flex items-center"
+          onClick={() => setShowImportForm(!showImportForm)}
+          className="bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700 flex items-center font-medium"
         >
-          <Download className="h-4 w-4 mr-2" />
-          Import Delegation
+          <Download className="h-5 w-5 mr-2" />
+          {showImportForm ? 'Hide Import Form' : 'Import UCAN Token'}
         </button>
       </div>
+
+      {/* Secondary Option: Storacha Credentials */}
+      <div className="bg-white rounded-lg border border-gray-200 p-6">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center">
+            <Key className="h-6 w-6 text-purple-500 mr-3" />
+            <div>
+              <h3 className="text-xl font-semibold text-gray-900">
+                Storacha Credentials (Alternative)
+              </h3>
+              <p className="text-sm text-gray-600">Advanced: Add credentials directly if you have a Storacha account</p>
+            </div>
+          </div>
+          {savedCredentials ? (
+            <div className="flex items-center text-green-600">
+              <Check className="h-5 w-5 mr-1" />
+              <span className="text-sm font-medium">Saved</span>
+            </div>
+          ) : (
+            <button
+              onClick={() => setShowCredentialsForm(!showCredentialsForm)}
+              className="text-purple-600 hover:text-purple-700 text-sm font-medium"
+            >
+              {showCredentialsForm ? 'Hide' : 'Add Credentials'}
+            </button>
+          )}
+        </div>
+
+        {savedCredentials ? (
+          <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+            <p className="text-green-800 text-sm">
+              ✓ Storacha credentials configured. You can now create delegations and upload files.
+            </p>
+            <button
+              onClick={() => {
+                setSavedCredentials(false);
+                setShowCredentialsForm(true);
+              }}
+              className="mt-2 text-sm text-green-700 hover:text-green-900 underline"
+            >
+              Update credentials
+            </button>
+          </div>
+        ) : (
+          <>
+            <p className="text-gray-600 text-sm mb-4">
+              Add Storacha space credentials to enable file uploads and delegation creation. Required if you didn't get a UCAN delegation from another person or device!
+            </p>
+            
+            {showCredentialsForm && (
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Private Key
+                  </label>
+                  <textarea
+                    value={credentials.key}
+                    onChange={(e) => handleCredentialChange('key', e.target.value)}
+                    placeholder="Paste your Storacha private key here..."
+                    className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent font-mono text-sm"
+                    rows={3}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Space Proof
+                  </label>
+                  <textarea
+                    value={credentials.proof}
+                    onChange={(e) => handleCredentialChange('proof', e.target.value)}
+                    placeholder="Paste your Storacha space proof here..."
+                    className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent font-mono text-sm"
+                    rows={3}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Space DID
+                  </label>
+                  <input
+                    type="text"
+                    value={credentials.spaceDid}
+                    onChange={(e) => handleCredentialChange('spaceDid', e.target.value)}
+                    placeholder="did:key:..."
+                    className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent font-mono text-sm"
+                  />
+                </div>
+
+                <button
+                  onClick={handleSaveCredentials}
+                  className="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 flex items-center"
+                >
+                  <Key className="h-4 w-4 mr-2" />
+                  Save Credentials
+                </button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Create Delegation (only show if user has Storacha credentials) */}
+      {savedCredentials && (
+        <div className="bg-white rounded-lg border border-gray-200 p-6">
+          <div className="flex items-center mb-4">
+            <Share className="h-6 w-6 text-purple-600 mr-3" />
+            <div>
+              <h3 className="text-xl font-semibold text-gray-900">Create Delegation for Others</h3>
+              <p className="text-sm text-gray-600">Share upload access with other DIDs by creating a UCAN delegation</p>
+            </div>
+          </div>
+          
+          <button
+            onClick={() => setShowCreateForm(!showCreateForm)}
+            className="bg-purple-600 text-white px-6 py-3 rounded-lg hover:bg-purple-700 flex items-center font-medium"
+          >
+            <Plus className="h-5 w-5 mr-2" />
+            {showCreateForm ? 'Hide Form' : 'Create New Delegation'}
+          </button>
+        </div>
+      )}
 
       {/* Create Delegation Form */}
       {showCreateForm && (
@@ -211,21 +377,46 @@ export function DelegationManager({ delegationService }: DelegationManagerProps)
             </div>
 
             <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Delegation Expiration
+              </label>
+              <select
+                value={expirationHours ?? 'never'}
+                onChange={(e) => setExpirationHours(e.target.value === 'never' ? null : Number(e.target.value))}
+                className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
+              >
+                <option value="never">No expiration (valid forever)</option>
+                <option value={1}>1 hour</option>
+                <option value={6}>6 hours</option>
+                <option value={24}>24 hours (1 day)</option>
+                <option value={72}>72 hours (3 days)</option>
+                <option value={168}>1 week</option>
+                <option value={720}>30 days (1 month)</option>
+                <option value={8760}>1 year</option>
+                <option value={87600}>10 years</option>
+              </select>
+              <p className="text-xs text-gray-500 mt-1">
+                {expirationHours === null 
+                  ? 'This delegation will never expire' 
+                  : 'The delegation will expire after this time period'}
+              </p>
+            </div>
+
+            <div>
               <label className="block text-sm font-medium text-gray-700 mb-3">
                 Select Capabilities to Delegate
               </label>
               
-              <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {/* Group capabilities by category */}
-                {['Upload', 'List', 'Delete', 'Store'].map(category => {
+                {['Upload', 'Delete', 'Store'].map(category => {
                   const categoryCapabilities = availableCapabilities.filter(cap => cap.category === category);
                   if (categoryCapabilities.length === 0) return null;
                   
                   return (
-                    <div key={category} className="border border-gray-200 rounded-lg p-4">
+                    <div key={category} className="border border-gray-200 rounded-lg p-4 hover:border-gray-300 transition-colors">
                       <h4 className="text-sm font-medium text-gray-900 mb-3 flex items-center">
                         {category === 'Upload' && <Upload className="h-4 w-4 mr-2 text-green-600" />}
-                        {category === 'List' && <Users className="h-4 w-4 mr-2 text-blue-600" />}
                         {category === 'Delete' && <Trash2 className="h-4 w-4 mr-2 text-red-600" />}
                         {category === 'Store' && <Shield className="h-4 w-4 mr-2 text-purple-600" />}
                         {category} Capabilities
@@ -233,7 +424,7 @@ export function DelegationManager({ delegationService }: DelegationManagerProps)
                       
                       <div className="space-y-2">
                         {categoryCapabilities.map(capability => (
-                          <label key={capability.id} className="flex items-start space-x-3 cursor-pointer">
+                          <label key={capability.id} className="flex items-start space-x-3 cursor-pointer hover:bg-gray-50 p-2 rounded-lg transition-colors">
                             <input
                               type="checkbox"
                               checked={selectedCapabilities.includes(capability.id)}
@@ -246,10 +437,10 @@ export function DelegationManager({ delegationService }: DelegationManagerProps)
                               }}
                               className="mt-1 h-4 w-4 text-green-600 focus:ring-green-500 border-gray-300 rounded"
                             />
-                            <div className="flex-1">
+                            <div className="flex-1 min-w-0">
                               <div className="text-sm font-medium text-gray-900">{capability.label}</div>
                               <div className="text-xs text-gray-500">{capability.description}</div>
-                              <code className="text-xs text-gray-400 bg-gray-100 px-1 py-0.5 rounded">{capability.id}</code>
+                              <code className="text-xs text-gray-400 bg-gray-100 px-1 py-0.5 rounded break-all">{capability.id}</code>
                             </div>
                           </label>
                         ))}
@@ -260,17 +451,17 @@ export function DelegationManager({ delegationService }: DelegationManagerProps)
               </div>
 
               {/* Quick selection buttons */}
-              <div className="flex gap-2 mt-4">
+              <div className="flex flex-wrap gap-2 mt-4">
                 <button
                   type="button"
-                  onClick={() => setSelectedCapabilities(['space/blob/add', 'space/blob/list'])}
+                  onClick={() => setSelectedCapabilities(['space/blob/add'])}
                   className="px-3 py-1 text-xs bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200"
                 >
-                  Basic (Upload + List)
+                  Basic Upload
                 </button>
                 <button
                   type="button"
-                  onClick={() => setSelectedCapabilities(['space/blob/add', 'space/blob/list', 'upload/add', 'upload/list'])}
+                  onClick={() => setSelectedCapabilities(['space/blob/add', 'upload/add'])}
                   className="px-3 py-1 text-xs bg-green-100 text-green-700 rounded-lg hover:bg-green-200"
                 >
                   Recommended
@@ -317,34 +508,40 @@ export function DelegationManager({ delegationService }: DelegationManagerProps)
         </div>
       )}
 
-      {/* Import Delegation Form */}
+      {/* Import UCAN Token Form */}
       {showImportForm && (
-        <div className="bg-white rounded-lg border border-gray-200 p-6">
-          <h3 className="text-xl font-semibold text-gray-900 mb-4">
-            Import Delegation
+        <div className="bg-white rounded-lg border-2 border-green-300 p-6">
+          <h3 className="text-xl font-bold text-gray-900 mb-2">
+            Import UCAN Delegation Token
           </h3>
+          <p className="text-sm text-gray-600 mb-4">
+            Paste the base64 UCAN token that was delegated to your Ed25519 DID
+          </p>
           
           <div className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Delegation Proof
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                UCAN Token (Base64)
               </label>
               <textarea
                 value={importProof}
                 onChange={(e) => setImportProof(e.target.value)}
-                placeholder="Paste the delegation proof here..."
-                className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono text-sm"
-                rows={4}
+                placeholder="Paste your base64 UCAN token here...\n\nExample: eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..."
+                className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent font-mono text-sm"
+                rows={6}
               />
+              <p className="text-xs text-gray-500 mt-2">
+                💡 Tip: Get this token from someone who delegated upload access to your DID (shown above)
+              </p>
             </div>
             
             <div className="flex gap-3">
               <button
                 onClick={handleImportDelegation}
-                className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 flex items-center"
+                className="bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700 flex items-center font-medium"
               >
-                <Download className="h-4 w-4 mr-2" />
-                Import Delegation
+                <Download className="h-5 w-5 mr-2" />
+                Import UCAN Token
               </button>
               
               <button
@@ -457,6 +654,27 @@ export function DelegationManager({ delegationService }: DelegationManagerProps)
                         <span className="ml-1 text-gray-900">
                           {new Date(delegation.createdAt).toLocaleDateString()}
                         </span>
+                      </div>
+                      
+                      <div className="flex items-center text-sm">
+                        <Clock className="h-4 w-4 text-gray-400 mr-2" />
+                        <span className="font-medium text-gray-600">Expires:</span>
+                        {delegation.expiresAt ? (
+                          <span className={`ml-1 ${
+                            new Date(delegation.expiresAt) < new Date() 
+                              ? 'text-red-600 font-semibold' 
+                              : new Date(delegation.expiresAt).getTime() - Date.now() < 24 * 60 * 60 * 1000
+                              ? 'text-orange-600'
+                              : 'text-gray-900'
+                          }`}>
+                            {new Date(delegation.expiresAt).toLocaleDateString()} {new Date(delegation.expiresAt).toLocaleTimeString()}
+                            {new Date(delegation.expiresAt) < new Date() && ' (Expired)'}
+                          </span>
+                        ) : (
+                          <span className="ml-1 text-green-600 font-medium">
+                            Never (valid forever)
+                          </span>
+                        )}
                       </div>
                       
                       <div className="text-sm">
@@ -622,6 +840,27 @@ export function DelegationManager({ delegationService }: DelegationManagerProps)
                         <span className="ml-1 text-gray-900">
                           {new Date(delegation.createdAt).toLocaleDateString()}
                         </span>
+                      </div>
+                      
+                      <div className="flex items-center text-sm">
+                        <Clock className="h-4 w-4 text-gray-400 mr-2" />
+                        <span className="font-medium text-gray-600">Expires:</span>
+                        {delegation.expiresAt ? (
+                          <span className={`ml-1 ${
+                            new Date(delegation.expiresAt) < new Date() 
+                              ? 'text-red-600 font-semibold' 
+                              : new Date(delegation.expiresAt).getTime() - Date.now() < 24 * 60 * 60 * 1000
+                              ? 'text-orange-600'
+                              : 'text-gray-900'
+                          }`}>
+                            {new Date(delegation.expiresAt).toLocaleDateString()} {new Date(delegation.expiresAt).toLocaleTimeString()}
+                            {new Date(delegation.expiresAt) < new Date() && ' (Expired)'}
+                          </span>
+                        ) : (
+                          <span className="ml-1 text-green-600 font-medium">
+                            Never (valid forever)
+                          </span>
+                        )}
                       </div>
                       
                       <div className="text-sm">
