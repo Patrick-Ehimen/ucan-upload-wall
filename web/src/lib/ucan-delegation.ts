@@ -267,7 +267,7 @@ export class UCANDelegationService {
                 }
                 
                 // Extract delegation from converted bytes
-                const { extract } = await import('@le-space/ucanto-core/delegation');
+                const { extract } = await import('@ucanto-core/delegation');
                 const extractResult = await extract(carBytes);
                 
                 if (extractResult && extractResult.ok) {
@@ -291,7 +291,7 @@ export class UCANDelegationService {
         } catch (jsonError) {
           // Fallback to direct CAR parsing
           const carBytes = new Uint8Array(this.base64ToArrayBuffer(delegationInfo.proof));
-          const { extract } = await import('@le-space/ucanto-core/delegation');
+          const { extract } = await import('@ucanto-core/delegation');
           const extractResult = await extract(carBytes);
           
           if (extractResult && extractResult.ok) {
@@ -322,7 +322,7 @@ export class UCANDelegationService {
       const { StoreMemory } = await import('@storacha/client/stores/memory');
       
       // Use the WebAuthn signer from our ucanto fork
-      const { WebAuthn } = await import('@le-space/ucanto-principal/p256');
+      const { WebAuthn } = await import('@ucanto-principal/p256');
       
       // Create WebAuthn authentication function
       const authenticateWithChallenge = async (challenge: Uint8Array) => {
@@ -375,9 +375,9 @@ export class UCANDelegationService {
         const fileData = await file.arrayBuffer();
         
         // Import UCAN client modules
-        const UCANClient = await import('@le-space/ucanto-client');
-        const HTTP = await import('@le-space/ucanto-transport/http');
-        const CAR = await import('@le-space/ucanto-transport/car');
+        const UCANClient = await import('@ucanto-client');
+        const HTTP = await import('@ucanto-transport/http');
+        const CAR = await import('@ucanto-transport/car');
         
         // Get Storacha service information
         const storachaServiceDID = { did: () => 'did:web:up.storacha.network' }; 
@@ -515,8 +515,8 @@ export class UCANDelegationService {
       console.log('Creating delegation chain: EdDSA → WebAuthn → Target DID');
       
       // Import ucanto delegation and principal modules
-      const { delegate } = await import('@le-space/ucanto-core/delegation');
-      const { Verifier } = await import('@le-space/ucanto-principal');
+      const { delegate } = await import('@ucanto-core/delegation');
+      const { Verifier } = await import('@ucanto-principal');
       
       // Use Alice's consistent WebAuthn DID
       const aliceWebAuthnDID = this.webauthnProvider!.did;
@@ -690,7 +690,7 @@ export class UCANDelegationService {
    * Since we can't easily match DIDs, let's use the WebAuthn DID as the target for delegation
    */
   private async createFallbackP256Signer(): Promise<any> {
-    const Principal = await import('@le-space/ucanto-principal');
+    const Principal = await import('@ucanto-principal');
     const webauthnDid = this.webauthnProvider!.did;
     
     console.log('🔄 Creating clean P-256 signer...');
@@ -761,7 +761,7 @@ export class UCANDelegationService {
       // Try to parse as CAR format
       try {
         console.log('Attempting to parse as CAR format...');
-        const { extract } = await import('@le-space/ucanto-core/delegation');
+        const { extract } = await import('@ucanto-core/delegation');
         const extractResult = await extract(tokenBytes);
         
         console.log('Extract result:', extractResult);
@@ -837,7 +837,7 @@ export class UCANDelegationService {
                 
                 // Now try to parse this as CAR format directly
                 try {
-                  const { extract } = await import('@le-space/ucanto-core/delegation');
+                  const { extract } = await import('@ucanto-core/delegation');
                   
                   const extractResult = await extract(carBytes);
                   
@@ -925,7 +925,7 @@ export class UCANDelegationService {
           const carArrayBuffer = this.base64ToArrayBuffer(delegationProof);
           const carBytes = new Uint8Array(carArrayBuffer);
           
-          const { extract } = await import('@le-space/ucanto-core/delegation');
+          const { extract } = await import('@ucanto-core/delegation');
           const extractResult = await extract(carBytes);
           
           // Handle ucanto Result format - check if it's {ok: Delegation} or {error: Error}
