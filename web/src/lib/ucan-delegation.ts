@@ -33,6 +33,7 @@ export interface DelegationInfo {
   proof: string;
   capabilities: string[];
   createdAt: string;
+  expiresAt?: string;     // When the delegation expires (ISO string)
 }
 
 export class UCANDelegationService {
@@ -170,600 +171,6 @@ export class UCANDelegationService {
   }
 
   /**
-   * List files in the space
-   * Works with both Storacha credentials and delegations
-   */
-  async listFiles(): Promise<Array<{ cid: string; name?: string; size?: number; uploadedAt?: string }>> {
-    const credentials = this.getStorachaCredentials();
-    const receivedDelegations = this.getReceivedDelegations();
-    
-    // Check if we have Storacha credentials (Browser A scenario)
-    if (credentials) {
-      console.log('Listing files with Storacha credentials');
-      if (!this.storachaClient) {
-        await this.initializeStorachaClient();
-      }
-      return this.listFilesUsingStorachaClient(this.storachaClient!);
-    }
-    
-    // Check if we have received delegations (Browser B scenario)
-    if (receivedDelegations.length > 0) {
-      console.log('Listing files with delegation');
-      return this.listFilesWithDelegation(receivedDelegations[0]);
-    }
-    
-    throw new Error('No Storacha credentials or delegations available. Please set up credentials or import a delegation.');
-  }
-
-
-  /**
-   * List files using delegations (Browser B)
-   */
-  private async listFilesWithDelegation(delegationInfo: DelegationInfo): Promise<Array<{ cid: string; name?: string; size?: number; uploadedAt?: string }>> {
-    if (!this.webauthnProvider) {
-      throw new Error('WebAuthn provider not initialized');
-    }
-    
-    try {
-      console.log('🔍 Starting delegation-based file listing...');
-      
-      // Debug the delegation to see what we're working with
-      await this.debugDelegation(delegationInfo);
-      
-      console.log('📋 Available capabilities in delegation info:', delegationInfo.capabilities);
-      
-      // Check if delegation has required listing capabilities
-      const hasListCapability = delegationInfo.capabilities.some(cap => 
-        cap.includes('upload/list') || 
-        cap.includes('space/blob/list') || 
-        cap.includes('store/list')
-      );
-      
-      if (!hasListCapability) {
-        console.error('❌ Delegation missing listing capabilities. Available:', delegationInfo.capabilities);
-        throw new Error('Delegation does not include required listing capabilities (upload/list, space/blob/list, or store/list)');
-      } else {
-        console.log('✅ Delegation includes listing capabilities');
-      }
-      
-      // Extract delegation (similar to upload process)
-      const decodedArrayBuffer = this.base64ToArrayBuffer(delegationInfo.proof);
-      const uint8Array = new Uint8Array(decodedArrayBuffer);
-      const decodedText = new TextDecoder().decode(uint8Array);
-      
-      let delegation;
-      
-      try {
-        // Try JSON parsing first (ucanto result format)
-        const jsonResult = JSON.parse(decodedText);
-        
-        if (jsonResult && jsonResult.ok && typeof jsonResult.ok === 'object') {
-          const okData = jsonResult.ok;
-          
-          if (typeof okData === 'object' && !Array.isArray(okData)) {
-            const keys = Object.keys(okData).map(k => parseInt(k)).filter(k => !isNaN(k)).sort((a, b) => a - b);
-            if (keys.length > 0) {
-              const maxKey = Math.max(...keys);
-              const carBytes = new Uint8Array(maxKey + 1);
-              for (const key of keys) {
-                carBytes[parseInt(key)] = okData[key];
-              }
-              
-              const { extract } = await import('@ucanto/core/delegation');
-              const extractResult = await extract(carBytes);
-              
-              if (extractResult && extractResult.ok) {
-                delegation = extractResult.ok;
-              } else if (extractResult && !extractResult.error) {
-                delegation = extractResult;
-              } else {
-                throw new Error('Failed to extract delegation');
-              }
-            }
-          }
-        }
-      } catch (jsonError) {
-        // Fallback to direct CAR parsing
-        const carBytes = new Uint8Array(this.base64ToArrayBuffer(delegationInfo.proof));
-        const { extract } = await import('@ucanto/core/delegation');
-        const extractResult = await extract(carBytes);
-        
-        if (extractResult && extractResult.ok) {
-          delegation = extractResult.ok;
-        } else if (extractResult && !extractResult.error) {
-          delegation = extractResult;
-        } else {
-          throw new Error('Failed to extract delegation via direct CAR');
-        }
-      }
-      
-      if (!delegation) {
-        throw new Error('Could not extract delegation for file listing');
-      }
-      
-      console.log('✅ Successfully extracted delegation for listing');
-      console.log('🎯 Delegation issuer:', delegation.issuer?.did?.() || delegation.issuer);
-      console.log('🎯 Delegation audience:', delegation.audience?.did?.() || delegation.audience);
-      console.log('📋 Delegation capabilities:', delegation.capabilities?.map(cap => cap.can || cap));
-      
-      // Get space DID from delegation
-      let spaceDid = 'unknown';
-      if (delegation.capabilities && delegation.capabilities.length > 0) {
-        const cap = delegation.capabilities[0];
-        if (cap.with && typeof cap.with === 'string' && cap.with.startsWith('did:key:')) {
-          spaceDid = cap.with;
-          console.log('🚀 Found space DID in delegation:', spaceDid);
-        }
-      }
-      
-      // Create WebAuthn signer
-      const webauthnDid = this.webauthnProvider!.did;
-      console.log('🔑 Current WebAuthn DID:', webauthnDid);
-      
-      const { WebAuthn } = await import('@ucanto/principal/p256');
-      
-      const authenticateWithChallenge = async (challenge: Uint8Array) => {
-        return await this.webauthnProvider!.authenticateWithChallenge(challenge);
-      };
-      
-      const bobAgent = WebAuthn.createWebAuthnSigner(webauthnDid, authenticateWithChallenge);
-      
-      // Create a Storacha client with delegation and use its upload.list capability
-      return this.listFilesWithDelegatedStorachaClient(bobAgent, delegation);
-      
-    } catch (error) {
-      console.error('❌ List files with delegation failed:', error);
-      throw new Error(`Failed to list files with delegation: ${error}`);
-    }
-  }
-
-  /**
-   * List files using Storacha client capability.upload.list method (like orbitdb-storacha-bridge)
-   */
-  private async listFilesUsingStorachaClient(
-    client: any
-  ): Promise<Array<{ cid: string; name?: string; size?: number; uploadedAt?: string }>> {
-    try {
-      console.log('💾 Using Storacha client capability.upload.list method...');
-      
-      // Use the same approach as orbitdb-storacha-bridge
-      const listOptions = {
-        size: 1000000  // Large number to get all files
-      };
-      
-      console.log('🔍 Calling client.capability.upload.list with options:', listOptions);
-      const result = await client.capability.upload.list(listOptions);
-      
-      console.log('🔍 Upload list result:', {
-        hasResults: !!result.results,
-        resultsLength: result.results ? result.results.length : 0,
-        sampleResult: result.results && result.results.length > 0 ? result.results[0] : null
-      });
-      
-      if (!result.results || !Array.isArray(result.results)) {
-        console.warn('⚠️ No results array in upload.list response');
-        return [];
-      }
-      
-      console.log(`✅ Found ${result.results.length} uploads in space`);
-      
-      // Convert to our format (similar to orbitdb-storacha-bridge)
-      const files = result.results.map(upload => {
-        console.log('🔍 Processing upload:', {
-          root: upload.root ? upload.root.toString() : 'no root',
-          insertedAt: upload.insertedAt,
-          shards: upload.shards ? upload.shards.length : 0
-        });
-        
-        return {
-          cid: upload.root ? upload.root.toString() : 'unknown',
-          name: undefined, // Upload records don't typically have original filenames
-          size: upload.shards ? upload.shards.reduce((total, shard) => {
-            return total + (shard.size || 0)
-          }, 0) : undefined,
-          uploadedAt: upload.insertedAt
-        };
-      });
-      
-      console.log(`✅ Processed ${files.length} files from uploads`);
-      return files;
-      
-    } catch (error) {
-      console.error('❌ Storacha client listing failed:', error.message);
-      throw error;
-    }
-  }
-
-  /**
-   * Create Storacha client with delegation and list files
-   */
-  private async listFilesWithDelegatedStorachaClient(
-    bobAgent: any, 
-    delegation: any
-  ): Promise<Array<{ cid: string; name?: string; size?: number; uploadedAt?: string }>> {
-    try {
-      console.log('💾 Creating delegated Storacha client for file listing...');
-      console.log('🎯 Agent DID:', bobAgent.did());
-      
-      // Import Storacha client modules
-      const Client = await import('@storacha/client');
-      const { StoreMemory } = await import('@storacha/client/stores/memory');
-      
-      // Create client using Bob's WebAuthn signer with Alice's delegation as proof
-      const store = new StoreMemory();
-      
-      console.log('🔄 Creating client with proofs...');
-      const delegatedClient = await Client.create({
-        principal: bobAgent,
-        store,
-        proofs: [delegation]
-      });
-      
-      console.log('✅ Created delegated Storacha client');
-      
-      // Get space DID from delegation and set as current space
-      let spaceDid = 'unknown';
-      if (delegation.capabilities && delegation.capabilities.length > 0) {
-        console.log('🔍 Examining delegation capabilities for space DID...');
-        for (const cap of delegation.capabilities) {
-          console.log(`   - Capability: ${cap.can} with: ${cap.with}`);
-          
-          // Look for Ed25519 space DIDs (z6Mk...) not P-256 WebAuthn DIDs (zDn...)
-          if (cap.with && typeof cap.with === 'string' && cap.with.startsWith('did:key:z6Mk')) {
-            spaceDid = cap.with;
-            console.log('✅ Found Ed25519 space DID:', spaceDid, 'for capability:', cap.can);
-            break;
-          } else if (cap.with && cap.with.startsWith('did:key:zDn')) {
-            console.log('⚠️ Skipping P-256 WebAuthn DID:', cap.with, '(not a space DID)');
-          } else if (cap.with && cap.with.startsWith('did:key:')) {
-            console.log('⚠️ Found other DID type:', cap.with, '(might not be space DID)');
-          }
-        }
-        
-        if (spaceDid === 'unknown') {
-          console.error('❌ No Ed25519 space DID found in delegation capabilities!');
-          console.log('🔍 All capability DIDs:');
-          delegation.capabilities.forEach((cap, i) => {
-            console.log(`   ${i + 1}. ${cap.can} with: ${cap.with}`);
-          });
-        }
-      }
-      
-      if (spaceDid !== 'unknown') {
-        try {
-          console.log('🔄 Adding space to client using delegation...');
-          // Try to add and set the space using delegation
-          const space = await delegatedClient.addSpace(delegation);
-          await delegatedClient.setCurrentSpace(space.did());
-          console.log('✅ Set current space from delegation:', space.did());
-        } catch (spaceError) {
-          console.warn('⚠️ Failed to set space from delegation:', spaceError.message);
-          // Try direct space setting as fallback
-          try {
-            console.log('🔄 Trying direct space setting as fallback...');
-            await delegatedClient.setCurrentSpace(spaceDid);
-            console.log('✅ Set current space directly:', spaceDid);
-          } catch (directError) {
-            console.warn('⚠️ Failed to set space directly too:', directError.message);
-            // Continue anyway - maybe the client can work without explicit space setting
-            console.log('🔄 Continuing without explicit space setting...');
-          }
-        }
-      } else {
-        console.warn('⚠️ No space DID found in delegation capabilities');
-      }
-      
-      // Verify client configuration before attempting to list
-      console.log('🔍 Client configuration:');
-      console.log('   Agent DID:', delegatedClient.agent?.did?.() || 'unknown');
-      console.log('   Current space:', delegatedClient.currentSpace?.() || 'unknown');
-      
-      // Now use the delegated client to list files
-      console.log('🔄 Attempting to list files with delegated client...');
-      
-      // Try the delegated client first
-      try {
-        return await this.listFilesUsingStorachaClient(delegatedClient);
-      } catch (clientError) {
-        console.warn('⚠️ Delegated client approach failed:', clientError.message);
-        console.log('🔄 Trying direct UCAN invocation approach as fallback...');
-        
-        // Fallback: Try direct UCAN invocation
-        return await this.listFilesWithDirectUCANInvocation(bobAgent, delegation, spaceDid);
-      }
-      
-    } catch (error) {
-      console.error('❌ Failed to create delegated client or list files:', error);
-      console.error('❌ Full error details:', error.stack);
-      throw error;
-    }
-  }
-
-  /**
-   * Create Storacha client with delegation and delete a file
-   */
-  private async deleteWithDelegatedStorachaClient(
-    bobAgent: any, 
-    delegation: any,
-    parsedCID: any
-  ): Promise<{ success: boolean; error?: string }> {
-    try {
-      console.log('💾 Creating delegated Storacha client for file deletion...');
-      
-      // Import Storacha client modules
-      const Client = await import('@storacha/client');
-      const { StoreMemory } = await import('@storacha/client/stores/memory');
-      
-      // Create client using Bob's WebAuthn signer with Alice's delegation as proof
-      const store = new StoreMemory();
-      const delegatedClient = await Client.create({
-        principal: bobAgent,
-        store,
-        proofs: [delegation]
-      });
-      
-      console.log('✅ Created delegated Storacha client');
-      
-      // Get space DID from delegation and set as current space
-      let spaceDid = 'unknown';
-      if (delegation.capabilities && delegation.capabilities.length > 0) {
-        const cap = delegation.capabilities[0];
-        if (cap.with && typeof cap.with === 'string' && cap.with.startsWith('did:key:')) {
-          spaceDid = cap.with;
-          
-          try {
-            // Try to add and set the space
-            const space = await delegatedClient.addSpace(delegation);
-            await delegatedClient.setCurrentSpace(space.did());
-            console.log('✅ Set current space from delegation');
-          } catch (spaceError) {
-            console.warn('Failed to set space from delegation:', spaceError.message);
-            // Try direct space setting as fallback
-            try {
-              await delegatedClient.setCurrentSpace(spaceDid);
-              console.log('✅ Set current space directly');
-            } catch (directError) {
-              console.warn('Failed to set space directly too:', directError.message);
-            }
-          }
-        }
-      }
-      
-      // Use the delegated client to delete the file (same as credentials approach)
-      console.log('🔄 Using delegated client.capability.upload.remove...');
-      
-      await delegatedClient.capability.upload.remove(parsedCID);
-      
-      console.log('✅ File deleted successfully via delegated upload.remove');
-      return {
-        success: true
-      };
-      
-    } catch (error: any) {
-      console.error('❌ Failed to create delegated client or delete file:', error);
-      return {
-        success: false,
-        error: `Delegated delete failed: ${error.message}`
-      };
-    }
-  }
-
-
-
-  /**
-   * Delete file from Storacha space
-   */
-  async deleteFile(cid: string): Promise<{ success: boolean; error?: string }> {
-    const credentials = this.getStorachaCredentials();
-    const receivedDelegations = this.getReceivedDelegations();
-    
-    // Check if we have delete permissions
-    if (credentials) {
-      console.log('Deleting file with Storacha credentials');
-      return this.deleteWithStorachaCredentials(cid);
-    }
-    
-    // Check if we have delegations with delete capability
-    const deleteDelegation = receivedDelegations.find(delegation => 
-      delegation.capabilities.includes('upload/remove') || 
-      delegation.capabilities.includes('space/blob/remove') ||
-      delegation.capabilities.includes('store/remove')
-    );
-    
-    if (deleteDelegation) {
-      console.log('Deleting file with delegation');
-      return this.deleteWithDelegation(cid, deleteDelegation);
-    }
-    
-    return {
-      success: false,
-      error: 'No delete permissions available. Need credentials or delegation with upload/remove capability.'
-    };
-  }
-
-  /**
-   * Delete file using Storacha credentials
-   */
-  private async deleteWithStorachaCredentials(cid: string): Promise<{ success: boolean; error?: string }> {
-    if (!this.storachaClient) {
-      await this.initializeStorachaClient();
-    }
-
-    try {
-      console.log('🗑️ Attempting to delete file with credentials:', cid);
-      
-      // Parse the CID to ensure it's valid (same approach as orbitdb-storacha-bridge)
-      const { CID } = await import('multiformats/cid');
-      let parsedCID;
-      try {
-        parsedCID = CID.parse(cid);
-      } catch (cidError) {
-        return {
-          success: false,
-          error: `Invalid CID format: ${cid}`
-        };
-      }
-      
-      // Use the same approach as orbitdb-storacha-bridge for upload removal
-      console.log('🔄 Using client.capability.upload.remove...');
-      
-      await this.storachaClient!.capability.upload.remove(parsedCID);
-      
-      console.log('✅ File deleted successfully via upload.remove');
-      return {
-        success: true
-      };
-      
-    } catch (error: any) {
-      console.error('❌ Delete with credentials failed:', error);
-      return {
-        success: false,
-        error: `Delete failed: ${error.message}`
-      };
-    }
-  }
-
-  /**
-   * Delete file using delegations
-   */
-  private async deleteWithDelegation(cid: string, delegationInfo: DelegationInfo): Promise<{ success: boolean; error?: string }> {
-    if (!this.webauthnProvider) {
-      throw new Error('WebAuthn provider not initialized');
-    }
-    
-    try {
-      console.log('🗑️ Attempting to delete file with delegation:', cid);
-      
-      // Parse the CID to ensure it's valid
-      const { CID } = await import('multiformats/cid');
-      let parsedCID;
-      try {
-        parsedCID = CID.parse(cid);
-      } catch (cidError) {
-        return {
-          success: false,
-          error: `Invalid CID format: ${cid}`
-        };
-      }
-      
-      // Extract delegation (similar to upload/list process)
-      const decodedArrayBuffer = this.base64ToArrayBuffer(delegationInfo.proof);
-      const uint8Array = new Uint8Array(decodedArrayBuffer);
-      const decodedText = new TextDecoder().decode(uint8Array);
-      
-      let delegation;
-      
-      try {
-        // Try JSON parsing first (ucanto result format)
-        const jsonResult = JSON.parse(decodedText);
-        
-        if (jsonResult && jsonResult.ok && typeof jsonResult.ok === 'object') {
-          const okData = jsonResult.ok;
-          
-          if (typeof okData === 'object' && !Array.isArray(okData)) {
-            const keys = Object.keys(okData).map(k => parseInt(k)).filter(k => !isNaN(k)).sort((a, b) => a - b);
-            if (keys.length > 0) {
-              const maxKey = Math.max(...keys);
-              const carBytes = new Uint8Array(maxKey + 1);
-              for (const key of keys) {
-                carBytes[parseInt(key)] = okData[key];
-              }
-              
-              const { extract } = await import('@ucanto/core/delegation');
-              const extractResult = await extract(carBytes);
-              
-              if (extractResult && extractResult.ok) {
-                delegation = extractResult.ok;
-              } else if (extractResult && !extractResult.error) {
-                delegation = extractResult;
-              } else {
-                throw new Error('Failed to extract delegation');
-              }
-            }
-          }
-        }
-      } catch (jsonError) {
-        // Fallback to direct CAR parsing
-        const carBytes = new Uint8Array(this.base64ToArrayBuffer(delegationInfo.proof));
-        const { extract } = await import('@ucanto/core/delegation');
-        const extractResult = await extract(carBytes);
-        
-        if (extractResult && extractResult.ok) {
-          delegation = extractResult.ok;
-        } else if (extractResult && !extractResult.error) {
-          delegation = extractResult;
-        } else {
-          throw new Error('Failed to extract delegation via direct CAR');
-        }
-      }
-      
-      if (!delegation) {
-        throw new Error('Could not extract delegation for file deletion');
-      }
-      
-      // Create WebAuthn signer
-      const webauthnDid = this.webauthnProvider!.did;
-      const { WebAuthn } = await import('@ucanto/principal/p256');
-      
-      const authenticateWithChallenge = async (challenge: Uint8Array) => {
-        return await this.webauthnProvider!.authenticateWithChallenge(challenge);
-      };
-      
-      const bobAgent = WebAuthn.createWebAuthnSigner(webauthnDid, authenticateWithChallenge);
-      
-      // Create delegated Storacha client and use it for deletion
-      return this.deleteWithDelegatedStorachaClient(bobAgent, delegation, parsedCID);
-      
-    } catch (error: any) {
-      console.error('❌ Delete with delegation failed:', error);
-      return {
-        success: false,
-        error: `Delegated delete failed: ${error.message}`
-      };
-    }
-  }
-
-  /**
-   * Check if current setup can delete files
-   */
-  canDeleteFiles(): boolean {
-    const credentials = this.getStorachaCredentials();
-    const receivedDelegations = this.getReceivedDelegations();
-    
-    // Has direct credentials
-    if (credentials) {
-      return true; // Assuming credentials have full permissions
-    }
-    
-    // Has delegation with delete capability
-    return receivedDelegations.some(delegation => 
-      delegation.capabilities.includes('upload/remove') || 
-      delegation.capabilities.includes('space/blob/remove') ||
-      delegation.capabilities.includes('store/remove')
-    );
-  }
-
-  /**
-   * Check if current setup can list files
-   */
-  canListFiles(): boolean {
-    const credentials = this.getStorachaCredentials();
-    const receivedDelegations = this.getReceivedDelegations();
-    
-    // Has direct credentials
-    if (credentials) {
-      return true;
-    }
-    
-    // Has delegation with list capability
-    return receivedDelegations.some(delegation => 
-      delegation.capabilities.includes('upload/list') || 
-      delegation.capabilities.includes('space/blob/list') ||
-      delegation.capabilities.includes('store/list')
-    );
-  }
-
-  /**
    * Upload file to Storacha
    * Browser A: Uses stored Storacha credentials directly
    * Browser B: Uses delegations received from Browser A
@@ -778,13 +185,19 @@ export class UCANDelegationService {
       return this.uploadWithStorachaCredentials(file);
     }
     
-    // Check if we have received delegations (Browser B scenario)
-    if (receivedDelegations.length > 0) {
+    // Check if we have received delegations with upload capability (Browser B scenario)
+    const uploadDelegation = receivedDelegations.find(delegation => 
+      delegation.capabilities.includes('upload/add') || 
+      delegation.capabilities.includes('space/blob/add') ||
+      delegation.capabilities.includes('store/add')
+    );
+    
+    if (uploadDelegation) {
       console.log('Uploading with delegation');
-      return this.uploadWithDelegation(file, receivedDelegations[0]);
+      return this.uploadWithDelegation(file, uploadDelegation);
     }
     
-    throw new Error('No Storacha credentials or delegations available. Please set up credentials or import a delegation.');
+    throw new Error('No upload permissions available. Need credentials or delegation with upload/add capability.');
   }
   
   /**
@@ -850,11 +263,11 @@ export class UCANDelegationService {
                 const maxKey = Math.max(...keys);
                 const carBytes = new Uint8Array(maxKey + 1);
                 for (const key of keys) {
-                  carBytes[parseInt(key)] = okData[key];
+                  carBytes[parseInt(key as unknown as string)] = okData[key as keyof typeof okData];
                 }
                 
                 // Extract delegation from converted bytes
-                const { extract } = await import('@ucanto/core/delegation');
+                const { extract } = await import('@le-space/ucanto-core/delegation');
                 const extractResult = await extract(carBytes);
                 
                 if (extractResult && extractResult.ok) {
@@ -878,7 +291,7 @@ export class UCANDelegationService {
         } catch (jsonError) {
           // Fallback to direct CAR parsing
           const carBytes = new Uint8Array(this.base64ToArrayBuffer(delegationInfo.proof));
-          const { extract } = await import('@ucanto/core/delegation');
+          const { extract } = await import('@le-space/ucanto-core/delegation');
           const extractResult = await extract(carBytes);
           
           if (extractResult && extractResult.ok) {
@@ -891,7 +304,7 @@ export class UCANDelegationService {
         }
       } catch (extractError) {
         console.error('Failed to extract delegation for upload:', extractError);
-        throw new Error(`Failed to extract delegation for upload: ${extractError.message}`);
+        throw new Error(`Failed to extract delegation for upload: ${(extractError as Error).message}`);
       }
       
       if (!delegation) {
@@ -909,7 +322,7 @@ export class UCANDelegationService {
       const { StoreMemory } = await import('@storacha/client/stores/memory');
       
       // Use the WebAuthn signer from our ucanto fork
-      const { WebAuthn } = await import('@ucanto/principal/p256');
+      const { WebAuthn } = await import('@le-space/ucanto-principal/p256');
       
       // Create WebAuthn authentication function
       const authenticateWithChallenge = async (challenge: Uint8Array) => {
@@ -922,9 +335,9 @@ export class UCANDelegationService {
       // Create client using Bob's WebAuthn provider as principal with Alice's delegation as proof
       const store = new StoreMemory();
       const client = await Client.create({
-        principal: bobAgent, // Bob's WebAuthn provider (DID matches delegation audience)
+        principal: bobAgent as any, // Bob's WebAuthn provider (DID matches delegation audience)
         store,
-        proofs: [delegation] // Alice's delegation
+        proofs: [delegation] as any
       });
       
       console.log('✅ Created Storacha client with delegation');
@@ -944,10 +357,10 @@ export class UCANDelegationService {
               await client.setCurrentSpace(space.did());
             } catch (addSpaceError) {
               // Fallback: try to set current space directly
-              await client.setCurrentSpace(spaceDid);
+              await client.setCurrentSpace(spaceDid as any);
             }
           } catch (spaceError) {
-            console.warn('Failed to set current space:', spaceError.message);
+            console.warn('Failed to set current space:', (spaceError as Error).message);
           }
         }
       }
@@ -962,18 +375,18 @@ export class UCANDelegationService {
         const fileData = await file.arrayBuffer();
         
         // Import UCAN client modules
-        const UCANClient = await import('@ucanto/client');
-        const HTTP = await import('@ucanto/transport/http');
-        const CAR = await import('@ucanto/transport/car');
+        const UCANClient = await import('@le-space/ucanto-client');
+        const HTTP = await import('@le-space/ucanto-transport/http');
+        const CAR = await import('@le-space/ucanto-transport/car');
         
         // Get Storacha service information
         const storachaServiceDID = { did: () => 'did:web:up.storacha.network' }; 
         const storachaURL = new URL('https://up.storacha.network');
         
         const connection = UCANClient.connect({
-          id: storachaServiceDID,
+          id: storachaServiceDID as any,
           codec: CAR.outbound,
-          channel: HTTP.open({ url: storachaURL }),
+          channel: HTTP.open({ url: storachaURL }) as any,
         });
         
         // Use the multiformats library to create a simple hash-based CID
@@ -987,10 +400,10 @@ export class UCANDelegationService {
         // Create space/blob/add invocation
         const blobAddInvocation = await UCANClient.invoke({
           issuer: bobAgent,
-          audience: storachaServiceDID,
+          audience: storachaServiceDID as any,
           capability: {
             can: 'space/blob/add',
-            with: spaceDid,
+            with: spaceDid as any,
             nb: {
               blob: {
                 digest: fileCID.multihash.bytes,
@@ -1002,11 +415,11 @@ export class UCANDelegationService {
         });
         
         // Execute the invocation
-        const blobAddResult = await blobAddInvocation.execute(connection);
+        const blobAddResult = await blobAddInvocation.execute(connection as any);
         
         // Check result
-        if (blobAddResult.error) {
-          throw new Error(`space/blob/add failed: ${blobAddResult.error.message}`);
+        if ((blobAddResult as any).error) {
+          throw new Error(`space/blob/add failed: ${(blobAddResult as any).error.message}`);
         }
         
         console.log('✅ File uploaded successfully:', fileCID.toString());
@@ -1077,8 +490,11 @@ export class UCANDelegationService {
   /**
    * Create a P-256 UCAN delegation to another DID
    * Browser A workflow: Storacha EdDSA → Browser A P-256 → Browser B P-256
+   * @param toDid Target DID to delegate to
+   * @param capabilities Array of capability strings to delegate
+   * @param expirationHours Number of hours until delegation expires (default: 24, null = no expiration)
    */
-  async createDelegation(toDid: string, capabilities: string[] = ['space/blob/add', 'space/blob/list', 'space/blob/remove', 'store/add', 'store/list', 'store/remove', 'upload/add', 'upload/list', 'upload/remove']): Promise<string> {
+  async createDelegation(toDid: string, capabilities: string[] = ['space/blob/add', 'space/blob/list', 'space/blob/remove', 'store/add', 'store/list', 'store/remove', 'upload/add', 'upload/list', 'upload/remove'], expirationHours: number | null = 24): Promise<string> {
     if (!this.webauthnProvider) {
       throw new Error('WebAuthn provider not initialized');
     }
@@ -1099,15 +515,15 @@ export class UCANDelegationService {
       console.log('Creating delegation chain: EdDSA → WebAuthn → Target DID');
       
       // Import ucanto delegation and principal modules
-      const { delegate } = await import('@ucanto/core/delegation');
-      const { Verifier } = await import('@ucanto/principal');
+      const { delegate } = await import('@le-space/ucanto-core/delegation');
+      const { Verifier } = await import('@le-space/ucanto-principal');
       
       // Use Alice's consistent WebAuthn DID
       const aliceWebAuthnDID = this.webauthnProvider!.did;
       
       // Create verifiers for the delegation chain
-      const aliceVerifier = Verifier.parse(aliceWebAuthnDID);  // Alice's consistent WebAuthn DID
-      const browserBVerifier = Verifier.parse(toDid);          // Bob's target DID
+      const aliceVerifier = Verifier.parse(aliceWebAuthnDID as any);  // Alice's consistent WebAuthn DID
+      const browserBVerifier = Verifier.parse(toDid as any);          // Bob's target DID
       
       // Convert capability strings to proper UCAN capability objects
       const ucanCapabilities = capabilities
@@ -1125,11 +541,16 @@ export class UCANDelegationService {
       const { Signer: EdDSASigner } = await import('@storacha/client/principal/ed25519');
       const storachaAgent = EdDSASigner.parse(credentials.key);
       
+      // Calculate expiration timestamp (undefined if no expiration)
+      const expirationTimestamp = expirationHours !== null 
+        ? Math.floor(Date.now() / 1000) + (expirationHours * 60 * 60)
+        : undefined;
+      
       const eddsaToWebAuthnDelegation = await delegate({
         issuer: storachaAgent,
         audience: aliceVerifier,
-        capabilities: ucanCapabilities,
-        expiration: Math.floor(Date.now() / 1000) + (24 * 60 * 60), // 24 hours
+        capabilities: ucanCapabilities as any,
+        expiration: expirationTimestamp,
         facts: []
       });
       
@@ -1144,7 +565,7 @@ export class UCANDelegationService {
         issuer: aliceP256Signer,            // Alice's P-256 signer with WebAuthn DID
         audience: browserBVerifier,         // Bob's P-256 target DID
         capabilities: ucanCapabilities,     // Same capabilities
-        expiration: Math.floor(Date.now() / 1000) + (24 * 60 * 60), // 24 hours
+        expiration: expirationTimestamp,    // Use same expiration as EdDSA delegation (undefined = no expiration)
         proofs: [eddsaToWebAuthnDelegation], // 🔑 KEY: Include EdDSA delegation as proof!
         facts: []
       };
@@ -1154,7 +575,7 @@ export class UCANDelegationService {
         throw new Error('Delegation parameters missing issuer or audience');
       }
       
-      const webAuthnToP256Delegation = await delegate(delegationParams);
+      const webAuthnToP256Delegation = await delegate(delegationParams as any);
       
       console.log('✅ Bridge delegation created successfully');
       
@@ -1173,12 +594,12 @@ export class UCANDelegationService {
         if (delegationCAR instanceof ArrayBuffer) {
           buffer = delegationCAR;
         } else if (delegationCAR instanceof Uint8Array) {
-          buffer = delegationCAR.buffer;
+          buffer = (delegationCAR as any).buffer;
         } else if (delegationCAR && typeof delegationCAR === 'object') {
-          if (delegationCAR.bytes) {
-            buffer = delegationCAR.bytes;
-          } else if (delegationCAR.buffer) {
-            buffer = delegationCAR.buffer;
+          if ((delegationCAR as any).bytes) {
+            buffer = (delegationCAR as any).bytes;
+          } else if ((delegationCAR as any).buffer) {
+            buffer = (delegationCAR as any).buffer;
           } else {
             const jsonStr = JSON.stringify(delegationCAR);
             buffer = new TextEncoder().encode(jsonStr).buffer;
@@ -1217,7 +638,8 @@ export class UCANDelegationService {
         toAudience: toDid,
         proof: carBase64,
         capabilities,
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
+        expiresAt: expirationTimestamp ? new Date(expirationTimestamp * 1000).toISOString() : undefined
       };
       
       this.storeDelegation(delegationInfo);
@@ -1268,7 +690,7 @@ export class UCANDelegationService {
    * Since we can't easily match DIDs, let's use the WebAuthn DID as the target for delegation
    */
   private async createFallbackP256Signer(): Promise<any> {
-    const Principal = await import('@ucanto/principal');
+    const Principal = await import('@le-space/ucanto-principal');
     const webauthnDid = this.webauthnProvider!.did;
     
     console.log('🔄 Creating clean P-256 signer...');
@@ -1285,7 +707,7 @@ export class UCANDelegationService {
       
     } catch (error) {
       console.error('❌ Failed to create P-256 signer:', error);
-      throw new Error(`Failed to create P-256 signer: ${error.message}`);
+      throw new Error(`Failed to create P-256 signer: ${(error as Error).message}`);
     }
   }
 
@@ -1294,6 +716,16 @@ export class UCANDelegationService {
    */
   async importDelegation(delegationProof: string): Promise<void> {
     try {
+      // Ensure we have a DID before verifying audience
+      if (!this.webauthnProvider) {
+        console.log('🔑 Initializing WebAuthn DID before import...');
+        await this.initializeWebAuthnDID();
+      }
+      if (!this.getCurrentDID()) {
+        console.log('🔐 Authenticating to finalize DID before import...');
+        await this.webauthnProvider!.authenticate();
+      }
+
       console.log('Importing delegation...');
       let delegationInfo: DelegationInfo;
       
@@ -1319,12 +751,12 @@ export class UCANDelegationService {
                 const maxKey = Math.max(...keys);
                 const carBytes = new Uint8Array(maxKey + 1);
                 for (const key of keys) {
-                  carBytes[parseInt(key)] = okData[key];
+                  carBytes[parseInt(key as unknown as string)] = okData[key as keyof typeof okData];
                 }
                 
                 // Now try to parse this as CAR format directly
                 try {
-                  const { extract } = await import('@ucanto/core/delegation');
+                  const { extract } = await import('@le-space/ucanto-core/delegation');
                   
                   const extractResult = await extract(carBytes);
                   
@@ -1355,13 +787,14 @@ export class UCANDelegationService {
                     
                     delegationInfo = {
                       id: delegation.cid?.toString() || crypto.randomUUID(),
-                      fromIssuer: issuerDid,
+                      fromIssuer: String(issuerDid),
                       toAudience: audienceDid,
                       proof: delegationProof,
                       capabilities: Array.isArray(delegation.capabilities) 
                         ? delegation.capabilities.map((cap: any) => cap.can || cap.capability || cap)
                         : ['space/blob/add', 'space/blob/list', 'space/blob/remove', 'store/add', 'store/list', 'store/remove', 'upload/add', 'upload/list', 'upload/remove'],
-                      createdAt: new Date().toISOString()
+                      createdAt: new Date().toISOString(),
+                      expiresAt: delegation.expiration ? new Date(delegation.expiration * 1000).toISOString() : undefined
                     };
                     
                     // Successfully parsed, we're done
@@ -1369,7 +802,7 @@ export class UCANDelegationService {
                     throw new Error('Invalid delegation extracted from ucanto format');
                   }
                 } catch (extractError) {
-                  console.warn('Failed to extract from ucanto ok data:', extractError.message);
+                  console.warn('Failed to extract from ucanto ok data:', (extractError as Error).message);
                   throw new Error('Failed to extract from ucanto format');
                 }
               } else {
@@ -1411,7 +844,7 @@ export class UCANDelegationService {
           const carArrayBuffer = this.base64ToArrayBuffer(delegationProof);
           const carBytes = new Uint8Array(carArrayBuffer);
           
-          const { extract } = await import('@ucanto/core/delegation');
+          const { extract } = await import('@le-space/ucanto-core/delegation');
           const extractResult = await extract(carBytes);
           
           // Handle ucanto Result format - check if it's {ok: Delegation} or {error: Error}
@@ -1442,20 +875,21 @@ export class UCANDelegationService {
             // Create delegation info from UCAN delegation
             delegationInfo = {
               id: delegation.cid?.toString() || crypto.randomUUID(),
-              fromIssuer: issuerDid,
+              fromIssuer: String(issuerDid),
               toAudience: audienceDid,
               proof: delegationProof,
               capabilities: Array.isArray(delegation.capabilities) 
                 ? delegation.capabilities.map((cap: any) => cap.can || cap.capability || cap)
                 : ['space/blob/add', 'space/blob/list', 'space/blob/remove', 'store/add', 'store/list', 'store/remove', 'upload/add', 'upload/list', 'upload/remove'], // fallback capabilities
-              createdAt: new Date().toISOString()
+              createdAt: new Date().toISOString(),
+              expiresAt: delegation.expiration ? new Date(delegation.expiration * 1000).toISOString() : undefined
             };
           } else {
             throw new Error('Invalid UCAN delegation format - missing delegation or audience');
           }
         } catch (carError) {
           console.error('Both JSON and CAR parsing failed');
-          throw new Error(`Invalid delegation format. JSON: ${jsonError.message}. CAR: ${carError.message}`);
+          throw new Error(`Invalid delegation format. JSON: ${(jsonError as Error).message}. CAR: ${(carError as Error).message}`);
         }
       }
 
@@ -1587,15 +1021,41 @@ export class UCANDelegationService {
   }
 
   /**
-   * Utility: Convert base64 to ArrayBuffer
+   * Utility: Convert base64url to standard base64
+   */
+  private base64urlToBase64(base64url: string): string {
+    // Replace base64url chars with standard base64 chars
+    let base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
+    // Add padding if needed
+    while (base64.length % 4 !== 0) {
+      base64 += '=';
+    }
+    return base64;
+  }
+
+  /**
+   * Utility: Convert base64 (or base64url) to ArrayBuffer
    */
   private base64ToArrayBuffer(base64: string): ArrayBuffer {
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
+    // Handle base64url encoding (convert to standard base64 first)
+    const standardBase64 = this.base64urlToBase64(base64);
+    
+    try {
+      const binary = atob(standardBase64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return bytes.buffer;
+    } catch (error) {
+      // If still fails, try without conversion (maybe it was already standard base64)
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return bytes.buffer;
     }
-    return bytes.buffer;
   }
 
   /**
@@ -1672,199 +1132,6 @@ export class UCANDelegationService {
     } catch (error) {
       console.error('❌ Failed to create fresh bridge delegation:', error);
       return null;
-    }
-  }
-
-  /**
-   * List files using direct UCAN invocation (fallback approach)
-   */
-  private async listFilesWithDirectUCANInvocation(
-    bobAgent: any,
-    delegation: any,
-    spaceDid: string
-  ): Promise<Array<{ cid: string; name?: string; size?: number; uploadedAt?: string }>> {
-    try {
-      console.log('🔧 Using direct UCAN invocation for listing...');
-      
-      // Import UCAN client modules
-      const UCANClient = await import('@ucanto/client');
-      const HTTP = await import('@ucanto/transport/http');
-      const CAR = await import('@ucanto/transport/car');
-      
-      // Get Storacha service information
-      const storachaServiceDID = { did: () => 'did:web:up.storacha.network' };
-      const storachaURL = new URL('https://up.storacha.network');
-      
-      const connection = UCANClient.connect({
-        id: storachaServiceDID,
-        codec: CAR.outbound,
-        channel: HTTP.open({ url: storachaURL }),
-      });
-      
-      console.log('🔄 Creating upload/list invocation...');
-      
-      // Create upload/list invocation
-      const listInvocation = await UCANClient.invoke({
-        issuer: bobAgent,
-        audience: storachaServiceDID,
-        capability: {
-          can: 'upload/list',
-          with: spaceDid,
-          nb: {
-            size: 1000000  // Large number to get all files
-          }
-        },
-        proofs: [delegation]
-      });
-      
-      console.log('🚀 Executing upload/list invocation...');
-      
-      // Execute the invocation
-      const result = await listInvocation.execute(connection);
-      
-      if (result.error) {
-        console.error('❌ upload/list invocation failed:', result.error);
-        throw new Error(`upload/list failed: ${result.error.message}`);
-      }
-      
-      console.log('✅ upload/list invocation successful');
-      console.log('📊 Result structure:', {
-        hasOut: !!result.out,
-        outType: typeof result.out,
-        outKeys: result.out ? Object.keys(result.out) : []
-      });
-      
-      // Parse results - the structure might be different from client.capability.upload.list
-      const uploads = result.out?.results || result.out || [];
-      
-      if (!Array.isArray(uploads)) {
-        console.warn('⚠️ Unexpected result format from upload/list:', result.out);
-        return [];
-      }
-      
-      console.log(`✅ Found ${uploads.length} uploads via direct invocation`);
-      
-      // Convert to our format
-      const files = uploads.map((upload: any) => ({
-        cid: upload.root ? upload.root.toString() : 'unknown',
-        name: undefined,
-        size: upload.shards ? upload.shards.reduce((total: number, shard: any) => {
-          return total + (shard.size || 0);
-        }, 0) : undefined,
-        uploadedAt: upload.insertedAt
-      }));
-      
-      return files;
-      
-    } catch (error) {
-      console.error('❌ Direct UCAN invocation failed:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Debug method to inspect delegation contents
-   */
-  async debugDelegation(delegationInfo: DelegationInfo): Promise<void> {
-    try {
-      console.log('🔍 Debugging delegation:', delegationInfo.id);
-      console.log('🎯 From issuer:', delegationInfo.fromIssuer);
-      console.log('🎯 To audience:', delegationInfo.toAudience);
-      console.log('📋 Stored capabilities:', delegationInfo.capabilities);
-      
-      // Extract actual delegation
-      const decodedArrayBuffer = this.base64ToArrayBuffer(delegationInfo.proof);
-      const uint8Array = new Uint8Array(decodedArrayBuffer);
-      const decodedText = new TextDecoder().decode(uint8Array);
-      
-      let delegation;
-      
-      try {
-        const jsonResult = JSON.parse(decodedText);
-        if (jsonResult && jsonResult.ok && typeof jsonResult.ok === 'object') {
-          const okData = jsonResult.ok;
-          if (typeof okData === 'object' && !Array.isArray(okData)) {
-            const keys = Object.keys(okData).map(k => parseInt(k)).filter(k => !isNaN(k)).sort((a, b) => a - b);
-            if (keys.length > 0) {
-              const maxKey = Math.max(...keys);
-              const carBytes = new Uint8Array(maxKey + 1);
-              for (const key of keys) {
-                carBytes[parseInt(key)] = okData[key];
-              }
-              const { extract } = await import('@ucanto/core/delegation');
-              const extractResult = await extract(carBytes);
-              if (extractResult && extractResult.ok) {
-                delegation = extractResult.ok;
-              } else if (extractResult && !extractResult.error) {
-                delegation = extractResult;
-              }
-            }
-          }
-        }
-      } catch (jsonError) {
-        const carBytes = new Uint8Array(this.base64ToArrayBuffer(delegationInfo.proof));
-        const { extract } = await import('@ucanto/core/delegation');
-        const extractResult = await extract(carBytes);
-        if (extractResult && extractResult.ok) {
-          delegation = extractResult.ok;
-        } else if (extractResult && !extractResult.error) {
-          delegation = extractResult;
-        }
-      }
-      
-      if (delegation) {
-        console.log('✅ Successfully extracted delegation');
-        console.log('🔑 Actual issuer DID:', delegation.issuer?.did?.() || delegation.issuer);
-        console.log('🎯 Actual audience DID:', delegation.audience?.did?.() || delegation.audience);
-        console.log('📋 Actual capabilities:');
-        delegation.capabilities?.forEach((cap, i) => {
-          console.log(`   ${i + 1}. ${cap.can} on ${cap.with}`);
-        });
-        console.log('⏰ Expiration:', delegation.expiration ? new Date(delegation.expiration * 1000) : 'none');
-        
-        // Check for listing capabilities specifically
-        const listingCapabilities = delegation.capabilities?.filter(cap => 
-          cap.can && (cap.can.includes('list') || cap.can.includes('upload'))
-        );
-        console.log('📝 Found listing-related capabilities:', listingCapabilities?.length || 0);
-        listingCapabilities?.forEach(cap => {
-          console.log(`   - ${cap.can} on ${cap.with}`);
-        });
-      } else {
-        console.error('❌ Failed to extract delegation for debugging');
-      }
-      
-    } catch (error) {
-      console.error('❌ Debug delegation failed:', error);
-    }
-  }
-
-  /**
-   * Verify a UCAN delegation
-   */
-  async verifyDelegation(delegationProof: string): Promise<boolean> {
-    try {
-      const carBytes = this.base64ToArrayBuffer(delegationProof);
-      const { extract } = await import('@ucanto/core/delegation');
-      const delegation = await extract(carBytes);
-      
-      if (!delegation) {
-        return false;
-      }
-      
-      // Check expiration
-      const now = Math.floor(Date.now() / 1000);
-      if (delegation.expiration && delegation.expiration < now) {
-        console.warn('Delegation has expired');
-        return false;
-      }
-      
-      // Basic structural validation
-      return true;
-      
-    } catch (error) {
-      console.error('Failed to verify delegation:', error);
-      return false;
     }
   }
 }
