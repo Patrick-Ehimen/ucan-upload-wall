@@ -128,7 +128,8 @@ export class WebAuthnDIDProvider {
         }
       });
 
-      if (!assertion || !assertion.response) {
+      const webauthnAssertion = assertion as PublicKeyCredential;
+      if (!webauthnAssertion || !webauthnAssertion.response) {
         return null;
       }
 
@@ -159,7 +160,7 @@ export class WebAuthnDIDProvider {
    * Reconstruct credential info from assertion (for existing credentials)
    */
   static async reconstructCredentialFromAssertion(
-    assertion: PublicKeyCredential,
+    _assertion: PublicKeyCredential,
     credentialId: string
   ): Promise<WebAuthnCredentialInfo> {
     // Create deterministic public key from credential ID
@@ -258,8 +259,8 @@ export class WebAuthnDIDProvider {
       const publicKey = await this.extractPublicKey(credential as PublicKeyCredential);
 
       const credentialInfo = {
-        credentialId: this.arrayBufferToBase64url(credential.rawId),
-        rawCredentialId: new Uint8Array(credential.rawId),
+        credentialId: this.arrayBufferToBase64url((credential as PublicKeyCredential).rawId),
+        rawCredentialId: new Uint8Array((credential as PublicKeyCredential).rawId),
         publicKey,
         userId,
         displayName,
@@ -316,8 +317,8 @@ export class WebAuthnDIDProvider {
       // Parse attested credential data
       let offset = signCountEnd;
       
-      // AAGUID (16 bytes)
-      const aaguid = authData.slice(offset, offset + 16);
+      // AAGUID (16 bytes) - skip for now
+      // const _aaguid = authData.slice(offset, offset + 16);
       offset += 16;
       
       // Credential ID length (2 bytes, big-endian)
@@ -326,8 +327,8 @@ export class WebAuthnDIDProvider {
       
       console.log('🔍 Credential ID length:', credentialIdLength);
       
-      // Credential ID
-      const credentialId = authData.slice(offset, offset + credentialIdLength);
+      // Credential ID - skip for now
+      // const _credentialId = authData.slice(offset, offset + credentialIdLength);
       offset += credentialIdLength;
       
       // Public key (CBOR encoded)
@@ -396,7 +397,7 @@ export class WebAuthnDIDProvider {
       console.warn('Failed to extract public key from WebAuthn credential, using fallback:', error);
 
       // Fallback: Create deterministic public key from credential ID
-      const credentialId = new Uint8Array(credential.rawId);
+      const credentialId = new Uint8Array((credential as PublicKeyCredential).rawId);
       const hash = await crypto.subtle.digest('SHA-256', credentialId);
       const seed = new Uint8Array(hash);
 
@@ -554,9 +555,9 @@ export class WebAuthnDIDProvider {
     try {
       const assertion = await navigator.credentials.get({
         publicKey: {
-          challenge,
+          challenge: challenge as BufferSource,
           allowCredentials: [{
-            id: this.rawCredentialId,
+            id: this.rawCredentialId as BufferSource,
             type: 'public-key'
           }],
           userVerification: 'required',
@@ -592,7 +593,7 @@ export class WebAuthnDIDProvider {
         publicKey: {
           challenge,
           allowCredentials: [{
-            id: this.rawCredentialId,
+            id: this.rawCredentialId as BufferSource,
             type: 'public-key'
           }],
           userVerification: 'required',

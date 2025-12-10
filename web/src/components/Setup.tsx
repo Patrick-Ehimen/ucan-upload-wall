@@ -56,15 +56,10 @@ export function Setup({ delegationService, onSetupComplete, onDidCreated }: Setu
   };
 
   const handleCreateDID = async () => {
-    if (!webauthnSupported) {
-      alert('WebAuthn is not supported in your browser');
-      return;
-    }
-
     setIsCreatingDID(true);
     try {
-      // Don't force new creation - try to reuse existing credential first
-      await delegationService.initializeWebAuthnDID(false); 
+      // Create or load Ed25519 DID (no biometric needed, stored in localStorage)
+      await delegationService.initializeEd25519DID(false); 
       const did = delegationService.getCurrentDID();
       setCurrentDID(did);
       
@@ -124,15 +119,15 @@ export function Setup({ delegationService, onSetupComplete, onDidCreated }: Setu
       {/* Step 1: WebAuthn DID */}
       <div className="bg-white rounded-lg border border-gray-200 p-6">
         <div className="flex items-center mb-4">
-          <Smartphone className="h-6 w-6 text-blue-500 mr-3" />
+          <Key className="h-6 w-6 text-blue-500 mr-3" />
           <h3 className="text-xl font-semibold text-gray-900">
-            Step 1: Create WebAuthn DID
+            Step 1: Create Ed25519 DID
           </h3>
         </div>
         
         <div className="space-y-4">
           <p className="text-gray-600">
-            Create a hardware-secured DID using your device's biometric authentication (Face ID, Touch ID, Windows Hello, etc.)
+            Generate an Ed25519 DID that will be stored securely in your browser. This DID is used for UCAN delegations.
           </p>
           
           {currentDID ? (
@@ -159,18 +154,18 @@ export function Setup({ delegationService, onSetupComplete, onDidCreated }: Setu
             <div className="flex gap-3">
               <button
                 onClick={handleCreateDID}
-                disabled={isCreatingDID || !webauthnSupported}
+                disabled={isCreatingDID}
                 className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
               >
-                <Shield className="h-4 w-4 mr-2" />
-                {isCreatingDID ? 'Authenticating...' : 'Authenticate with Biometric'}
+                <Key className="h-4 w-4 mr-2" />
+                {isCreatingDID ? 'Generating...' : 'Generate Ed25519 DID'}
               </button>
             </div>
           )}
         </div>
       </div>
 
-      {/* Step 2: Storacha Credentials */}
+      {/* Storacha Credentials */}
       <div className="bg-white rounded-lg border border-gray-200 p-6">
         <div className="flex items-center mb-4">
           <Key className="h-6 w-6 text-purple-500 mr-3" />

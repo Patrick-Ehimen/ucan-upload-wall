@@ -1,14 +1,59 @@
-import { useCallback, useState } from 'react';
-import { Upload, FileText, X } from 'lucide-react';
+import { useCallback, useState, useEffect } from 'react';
+import { Upload, FileText, X, Shield, Smartphone, Copy, Check, AlertCircle } from 'lucide-react';
+import { UCANDelegationService } from '../lib/ucan-delegation';
+import { WebAuthnDIDProvider } from '../lib/webauthn-did';
 
 interface UploadZoneProps {
   onFileSelect: (file: File) => void;
   isUploading: boolean;
+  delegationService: UCANDelegationService;
+  onDidCreated?: () => void;
 }
 
-export function UploadZone({ onFileSelect, isUploading }: UploadZoneProps) {
+export function UploadZone({ onFileSelect, isUploading, delegationService, onDidCreated }: UploadZoneProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [currentDID, setCurrentDID] = useState<string | null>(null);
+  const [isCreatingDID, setIsCreatingDID] = useState(false);
+  const [webauthnSupported, setWebauthnSupported] = useState(false);
+  const [copiedDID, setCopiedDID] = useState(false);
+
+  useEffect(() => {
+    // Check WebAuthn support
+    setWebauthnSupported(WebAuthnDIDProvider.isSupported());
+    
+    // Load existing DID
+    const did = delegationService.getCurrentDID();
+    setCurrentDID(did);
+  }, [delegationService]);
+
+  const handleCreateDID = async () => {
+    setIsCreatingDID(true);
+    try {
+      await delegationService.initializeEd25519DID(false); 
+      const did = delegationService.getCurrentDID();
+      setCurrentDID(did);
+      
+      if (onDidCreated) {
+        onDidCreated();
+      }
+    } catch (error) {
+      alert(`Failed to create DID: ${error}`);
+    } finally {
+      setIsCreatingDID(false);
+    }
+  };
+
+  const copyToClipboard = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedDID(true);
+      setTimeout(() => setCopiedDID(false), 2000);
+    } catch (error) {
+      console.error('Failed to copy:', error);
+    }
+  };
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -26,14 +71,28 @@ export function UploadZone({ onFileSelect, isUploading }: UploadZoneProps) {
 
     const files = Array.from(e.dataTransfer.files);
     if (files.length > 0) {
-      setSelectedFile(files[0]);
+      const file = files[0];
+      setSelectedFile(file);
+      
+      // Create preview for images
+      if (file.type.startsWith('image/')) {
+        const url = URL.createObjectURL(file);
+        setPreviewUrl(url);
+      }
     }
   }, []);
 
   const handleFileInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (files && files.length > 0) {
-      setSelectedFile(files[0]);
+      const file = files[0];
+      setSelectedFile(file);
+      
+      // Create preview for images
+      if (file.type.startsWith('image/')) {
+        const url = URL.createObjectURL(file);
+        setPreviewUrl(url);
+      }
     }
   }, []);
 
@@ -46,7 +105,11 @@ export function UploadZone({ onFileSelect, isUploading }: UploadZoneProps) {
 
   const handleClear = useCallback(() => {
     setSelectedFile(null);
-  }, []);
+    if (previewUrl) {
+      URL.revokeObjectURL(previewUrl);
+      setPreviewUrl(null);
+    }
+  }, [previewUrl]);
 
   const formatFileSize = (bytes: number): string => {
     if (bytes < 1024) return bytes + ' B';
@@ -54,8 +117,87 @@ export function UploadZone({ onFileSelect, isUploading }: UploadZoneProps) {
     return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
   };
 
+  const hasCredentials = !!delegationService.getStorachaCredentials();
+  const hasReceivedDelegations = delegationService.getReceivedDelegations().length > 0;
+  const canUpload = hasCredentials || hasReceivedDelegations;
+
   return (
-    <div className="w-full max-w-2xl">
+    <div className="w-full max-w-2xl space-y-6">
+      {/* WebAuthn DID Setup */}
+      {!webauthnSupported && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+          <div className="flex items-center">
+            <AlertCircle className="h-5 w-5 text-red-500 mr-3" />
+            <div>
+              <h3 className="text-red-800 font-medium">WebAuthn Not Supported</h3>
+              <p className="text-red-700 text-sm">
+                Your browser doesn't support WebAuthn. Please use a modern browser like Chrome, Firefox, or Safari.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!currentDID ? (
+        <div className="bg-white rounded-lg border-2 border-blue-200 p-6">
+          <div className="flex items-center mb-4">
+            <Shield className="h-6 w-6 text-blue-500 mr-3" />
+            <h3 className="text-xl font-semibold text-gray-900">
+              Step 1: Create Ed25519 DID
+            </h3>
+          </div>
+          
+          <div className="space-y-4">
+            <p className="text-gray-600">
+              Generate an Ed25519 DID that will be stored securely in your browser.
+            </p>
+            
+            <button
+              onClick={handleCreateDID}
+              disabled={isCreatingDID}
+              className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
+            >
+              <Shield className="h-4 w-4 mr-2" />
+              {isCreatingDID ? 'Generating...' : 'Generate Ed25519 DID'}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="bg-gradient-to-r from-green-50 to-blue-50 rounded-lg border border-green-200 p-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center">
+              <Shield className="h-5 w-5 text-green-500 mr-2" />
+              <div>
+                <span className="text-green-800 font-medium">Ed25519 DID Active</span>
+                <code className="block text-xs text-green-700 mt-1 break-all">
+                  {currentDID.substring(0, 30)}...{currentDID.slice(-10)}
+                </code>
+              </div>
+            </div>
+            <button
+              onClick={() => copyToClipboard(currentDID)}
+              className="flex items-center text-green-600 hover:text-green-800 ml-2"
+            >
+              {copiedDID ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Upload Zone */}
+      {!canUpload && currentDID && (
+        <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
+          <div className="flex items-center">
+            <AlertCircle className="h-5 w-5 text-orange-500 mr-3" />
+            <div>
+              <h3 className="text-orange-800 font-medium">Upload Credentials Needed</h3>
+              <p className="text-orange-700 text-sm">
+                Go to the Delegations tab to add Storacha credentials or import a delegation to enable uploads.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
       <div
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
@@ -63,7 +205,7 @@ export function UploadZone({ onFileSelect, isUploading }: UploadZoneProps) {
         className={`
           relative border-2 border-dashed rounded-xl p-12 transition-all duration-200
           ${isDragging ? 'border-red-500 bg-red-50' : 'border-gray-300 bg-white'}
-          ${isUploading ? 'opacity-50 pointer-events-none' : 'hover:border-gray-400'}
+          ${isUploading || !canUpload ? 'opacity-50 pointer-events-none' : 'hover:border-gray-400'}
         `}
       >
         <div className="flex flex-col items-center gap-4">
@@ -99,6 +241,17 @@ export function UploadZone({ onFileSelect, isUploading }: UploadZoneProps) {
             </>
           ) : (
             <div className="w-full">
+              {/* Image Preview */}
+              {previewUrl && (
+                <div className="mb-4 flex justify-center">
+                  <img 
+                    src={previewUrl} 
+                    alt="Preview" 
+                    className="max-w-full max-h-64 rounded-lg border border-gray-200 shadow-sm object-contain"
+                  />
+                </div>
+              )}
+              
               <div className="flex items-center gap-3 p-4 bg-gray-50 rounded-lg">
                 <FileText className="w-5 h-5 text-gray-600 flex-shrink-0" />
                 <div className="flex-1 min-w-0">

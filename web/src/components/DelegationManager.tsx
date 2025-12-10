@@ -15,6 +15,7 @@ export function DelegationManager({ delegationService }: DelegationManagerProps)
   const [showImportForm, setShowImportForm] = useState(false);
   const [targetDID, setTargetDID] = useState('');
   const [importProof, setImportProof] = useState('');
+  const [delegationName, setDelegationName] = useState('');
   const [isCreating, setIsCreating] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [showDelegationProof, setShowDelegationProof] = useState(false);
@@ -122,10 +123,11 @@ export function DelegationManager({ delegationService }: DelegationManagerProps)
     }
 
     try {
-      await delegationService.importDelegation(importProof);
+      await delegationService.importDelegation(importProof, delegationName || undefined);
       loadData();
       setShowImportForm(false);
       setImportProof('');
+      setDelegationName(''); // Clear the name field
       alert('Delegation imported successfully!');
     } catch (error) {
       alert(`Failed to import delegation: ${error}`);
@@ -186,8 +188,8 @@ export function DelegationManager({ delegationService }: DelegationManagerProps)
             <div className="flex items-center flex-1">
               <Shield className="h-6 w-6 text-blue-600 mr-3" />
               <div className="flex-1">
-                <h3 className="text-lg font-bold text-blue-900 mb-1">Your Hardware-Protected Ed25519 DID</h3>
-                <p className="text-sm text-blue-700 mb-2">Share this DID to receive UCAN delegations</p>
+                <h3 className="text-lg font-bold text-blue-900 mb-1">Your Ed25519 DID</h3>
+                <p className="text-sm text-blue-700 mb-2">Share this DID to receive UCAN delegations from Storacha CLI</p>
                 <code className="text-sm text-blue-800 break-all bg-white/60 px-3 py-2 rounded border border-blue-200 block">{currentDID}</code>
               </div>
             </div>
@@ -533,17 +535,33 @@ export function DelegationManager({ delegationService }: DelegationManagerProps)
           <div className="space-y-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
+                Delegation Name (Optional)
+              </label>
+              <input
+                type="text"
+                value={delegationName}
+                onChange={(e) => setDelegationName(e.target.value)}
+                placeholder="e.g., Alice's Upload Token, Work Laptop, etc."
+                className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                💡 Give this delegation a friendly name to remember where it came from
+              </p>
+            </div>
+            
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
                 UCAN Token (Base64)
               </label>
               <textarea
                 value={importProof}
                 onChange={(e) => setImportProof(e.target.value)}
-                placeholder="Paste your base64 UCAN token here...\n\nExample: eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..."
+                placeholder="Paste your base64 UCAN token here...\n\nExample: mAYIEAKMYOqJlcm9vdHO..."
                 className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent font-mono text-sm"
                 rows={6}
               />
               <p className="text-xs text-gray-500 mt-2">
-                💡 Tip: Get this token from someone who delegated upload access to your DID (shown above)
+                💡 Get this token from `storacha delegation create YOUR_DID --base64`
               </p>
             </div>
             

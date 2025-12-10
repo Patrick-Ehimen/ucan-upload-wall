@@ -1,35 +1,64 @@
 import { useState, useCallback, useEffect } from 'react';
-import { Settings, Upload, Share } from 'lucide-react';
+import { Upload, Share, Download, Calendar, Clock, Trash2 } from 'lucide-react';
 import { Header } from './components/Header';
 import { UploadZone } from './components/UploadZone';
-import { FileList } from './components/FileList';
 import { Alert } from './components/Alert';
-import { Setup } from './components/Setup';
 import { DelegationManager } from './components/DelegationManager';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { useFileUpload } from './hooks/useFileUpload';
-import { useFileListing } from './hooks/useFileListing';
 import { UploadedFile } from './types/upload';
 
-type AppView = 'setup' | 'upload' | 'delegations';
+type AppView = 'upload' | 'delegations';
 
 function App() {
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
+  const [storachaFiles, setStorachaFiles] = useState<Array<{ root: string; shards?: string[]; insertedAt?: string; updatedAt?: string }>>([]);
+  const [isLoadingFiles, setIsLoadingFiles] = useState(false);
+  const [deletingFiles, setDeletingFiles] = useState<Set<string>>(new Set());
   const [alert, setAlert] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
-  const [currentView, setCurrentView] = useState<AppView>('setup');
+  const [currentView, setCurrentView] = useState<AppView>('upload');
   const [didCreated, setDidCreated] = useState(false);
   const { uploadFile, isUploading, error, delegationService } = useFileUpload();
-  const { files: storedFiles, isLoading: isLoadingStored, error: storedFilesError, deletingFiles, canListFiles, canDeleteFiles, refreshFiles, deleteFile } = useFileListing(delegationService);
+  const [hasDeleteCapability, setHasDeleteCapability] = useState(false);
   
   useEffect(() => {
-    // Check if setup is complete on load
-    if (delegationService.isSetupComplete()) {
-      setCurrentView('upload');
-    }
-    
     // Check if DID is available
     const hasDID = !!delegationService.getCurrentDID();
     setDidCreated(hasDID);
+    
+    // Check delete capability
+    setHasDeleteCapability(delegationService.hasDeleteCapability());
   }, [delegationService]);
+  
+  // Separate effect to load files only when DID is ready
+  useEffect(() => {
+    const loadStorachaFiles = async () => {
+      // Only try to load if we have a DID (authenticated)
+      if (!didCreated) {
+        console.log('Skipping file load - DID not initialized yet');
+        return;
+      }
+      
+      const hasCredentials = !!delegationService.getStorachaCredentials();
+      const hasDelegations = delegationService.getReceivedDelegations().length > 0;
+      
+      if (hasCredentials || hasDelegations) {
+        console.log('Loading files from Storacha...');
+        setIsLoadingFiles(true);
+        try {
+          const files = await delegationService.listUploads();
+          setStorachaFiles(files);
+          console.log(`Loaded ${files.length} files from Storacha`);
+        } catch (error) {
+          console.error('Failed to load Storacha files:', error);
+        } finally {
+          setIsLoadingFiles(false);
+        }
+      }
+    };
+    
+    loadStorachaFiles();
+  }, [didCreated, delegationService]);
   
   // Add a periodic check for DID creation (since it might happen async)
   useEffect(() => {
@@ -61,8 +90,14 @@ function App() {
         message: `Successfully uploaded ${file.name}!`,
       });
       
-      // Refresh stored files to show the newly uploaded file
-      setTimeout(() => refreshFiles(), 1000);
+      // Reload files from Storacha after successful upload
+      try {
+        const files = await delegationService.listUploads();
+        setStorachaFiles(files);
+      } catch (error) {
+        console.error('Failed to reload Storacha files after upload:', error);
+      }
+      
     } else if (error) {
       setAlert({
         type: 'error',
@@ -74,52 +109,53 @@ function App() {
   const handleCloseAlert = useCallback(() => {
     setAlert(null);
   }, []);
-
-  const handleSetupComplete = () => {
-    // Update state to reflect changes
-    const hasDID = !!delegationService.getCurrentDID();
-    setDidCreated(hasDID);
-    setCurrentView('upload');
-  };
   
+  const handleDeleteFile = useCallback(async (rootCid: string) => {
+    if (!confirm('Are you sure you want to delete this file?')) {
+      return;
+    }
+    
+    setDeletingFiles(prev => new Set(prev).add(rootCid));
+    
+    try {
+      await delegationService.deleteUpload(rootCid);
+      
+      // Remove from local state
+      setStorachaFiles(prev => prev.filter(f => f.root !== rootCid));
+      
+      setAlert({
+        type: 'success',
+        message: 'File deleted successfully!',
+      });
+    } catch (error) {
+      console.error('Delete failed:', error);
+      setAlert({
+        type: 'error',
+        message: `Failed to delete file: ${error}`,
+      });
+    } finally {
+      setDeletingFiles(prev => {
+        const next = new Set(prev);
+        next.delete(rootCid);
+        return next;
+      });
+    }
+  }, [delegationService]);
+
   const handleDidCreated = () => {
-    // Callback for when DID is created in Setup component
+    // Callback for when DID is created
     const hasDID = !!delegationService.getCurrentDID();
     setDidCreated(hasDID);
   };
 
   const renderNavigation = () => {
-    const hasCredentials = !!delegationService.getStorachaCredentials();
-    const hasDID = !!delegationService.getCurrentDID();
-    const hasReceivedDelegations = delegationService.getReceivedDelegations().length > 0;
-    
-    // Different access rules:
-    // - Setup: Always accessible
-    // - Upload: Accessible if has credentials OR has received delegations
-    // - Delegations: Accessible if has DID (for Browser A and Browser B)
-    const canAccessUpload = hasCredentials || hasReceivedDelegations;
-    const canAccessDelegations = hasDID;
-    
     return (
       <nav className="bg-white border-b border-gray-200 mb-6">
         <div className="max-w-7xl mx-auto px-6">
           <div className="flex justify-center space-x-8">
             <button
-              onClick={() => setCurrentView('setup')}
-              className={`py-4 px-2 border-b-2 font-medium text-sm transition-colors ${
-                currentView === 'setup'
-                  ? 'border-blue-500 text-blue-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            >
-              <Settings className="h-4 w-4 inline mr-2" />
-              Setup
-            </button>
-            
-            <button
               onClick={() => setCurrentView('upload')}
-              disabled={!canAccessUpload}
-              className={`py-4 px-2 border-b-2 font-medium text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+              className={`py-4 px-2 border-b-2 font-medium text-sm transition-colors ${
                 currentView === 'upload'
                   ? 'border-blue-500 text-blue-600'
                   : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
@@ -127,15 +163,11 @@ function App() {
             >
               <Upload className="h-4 w-4 inline mr-2" />
               Upload Files
-              {!canAccessUpload && (
-                <span className="ml-1 text-xs text-gray-400">(needs credentials or delegation)</span>
-              )}
             </button>
             
             <button
               onClick={() => setCurrentView('delegations')}
-              disabled={!canAccessDelegations}
-              className={`py-4 px-2 border-b-2 font-medium text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+              className={`py-4 px-2 border-b-2 font-medium text-sm transition-colors ${
                 currentView === 'delegations'
                   ? 'border-blue-500 text-blue-600'
                   : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
@@ -143,9 +175,6 @@ function App() {
             >
               <Share className="h-4 w-4 inline mr-2" />
               Delegations
-              {!canAccessDelegations && (
-                <span className="ml-1 text-xs text-gray-400">(needs DID)</span>
-              )}
             </button>
           </div>
         </div>
@@ -155,18 +184,12 @@ function App() {
 
   const renderContent = () => {
     switch (currentView) {
-      case 'setup':
-        return (
-          <Setup 
-            delegationService={delegationService} 
-            onSetupComplete={handleSetupComplete}
-            onDidCreated={handleDidCreated}
-          />
-        );
-      
       case 'delegations':
         return (
-          <DelegationManager delegationService={delegationService} />
+          <DelegationManager 
+            delegationService={delegationService}
+            onDidCreated={handleDidCreated}
+          />
         );
       
       case 'upload':
@@ -184,18 +207,140 @@ function App() {
                 </p>
               </div>
 
-              <UploadZone onFileSelect={handleFileSelect} isUploading={isUploading} />
-              <FileList 
-                files={uploadedFiles} 
-                storedFiles={storedFiles}
-                isLoadingStored={isLoadingStored}
-                onRefreshStored={refreshFiles}
-                storedFilesError={storedFilesError}
-                canListFiles={canListFiles}
-                canDeleteFiles={canDeleteFiles}
-                deletingFiles={deletingFiles}
-                onDeleteFile={deleteFile}
+              <UploadZone 
+                onFileSelect={handleFileSelect} 
+                isUploading={isUploading}
+                delegationService={delegationService}
+                onDidCreated={handleDidCreated}
               />
+              
+              {/* Show files from Storacha space */}
+              {isLoadingFiles && (
+                <div className="w-full max-w-2xl mt-12 text-center">
+                  <p className="text-gray-600">Loading files from Storacha...</p>
+                </div>
+              )}
+              
+              {storachaFiles.length > 0 && (
+                <div className="w-full max-w-2xl mt-12">
+                  <h2 className="text-2xl font-bold text-gray-900 mb-6">Files in Storacha Space</h2>
+                  <div className="space-y-3">
+                    {storachaFiles.map((file, index) => {
+                      const gatewayUrl = `https://w3s.link/ipfs/${file.root}`;
+                      const isImage = file.root.startsWith('bafkrei'); // Most images use raw codec
+                      
+                      return (
+                        <div key={file.root} className="bg-white rounded-lg border border-gray-200 p-4">
+                          <div className="flex items-start gap-4">
+                            {/* Preview thumbnail */}
+                            <div className="flex-shrink-0">
+                              {isImage ? (
+                                <img 
+                                  src={gatewayUrl} 
+                                  alt="Preview"
+                                  className="w-16 h-16 rounded object-cover border border-gray-200"
+                                  onError={(e) => {
+                                    // Fallback to generic icon if image fails to load
+                                    e.currentTarget.style.display = 'none';
+                                  }}
+                                />
+                              ) : (
+                                <div className="w-16 h-16 rounded bg-gray-100 flex items-center justify-center border border-gray-200">
+                                  <Upload className="w-6 h-6 text-gray-400" />
+                                </div>
+                              )}
+                            </div>
+                            
+                            {/* File info */}
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-start justify-between gap-2">
+                                <h3 className="text-sm font-semibold text-gray-900">
+                                  Upload #{index + 1}
+                                </h3>
+                                <div className="flex items-center gap-2">
+                                  <a
+                                    href={gatewayUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 flex-shrink-0"
+                                  >
+                                    <Download className="w-3 h-3" />
+                                    View
+                                  </a>
+                                  {hasDeleteCapability && (
+                                    <button
+                                      onClick={() => handleDeleteFile(file.root)}
+                                      disabled={deletingFiles.has(file.root)}
+                                      className="flex items-center gap-1 text-xs text-red-600 hover:text-red-800 disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0"
+                                      title="Delete file"
+                                    >
+                                      <Trash2 className="w-3 h-3" />
+                                      {deletingFiles.has(file.root) ? 'Deleting...' : 'Delete'}
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                              
+                              <code className="text-xs text-gray-600 bg-gray-50 px-2 py-1 rounded block break-all mt-1">
+                                {file.root}
+                              </code>
+                              
+                              {/* Metadata */}
+                              <div className="flex flex-wrap items-center gap-3 mt-2 text-xs text-gray-500">
+                                {file.insertedAt && (
+                                  <div className="flex items-center gap-1">
+                                    <Calendar className="w-3 h-3" />
+                                    <span>{new Date(file.insertedAt).toLocaleDateString()}</span>
+                                  </div>
+                                )}
+                                {file.updatedAt && (
+                                  <div className="flex items-center gap-1">
+                                    <Clock className="w-3 h-3" />
+                                    <span>{new Date(file.updatedAt).toLocaleTimeString()}</span>
+                                  </div>
+                                )}
+                                {file.shards && file.shards.length > 0 && (
+                                  <span>{file.shards.length} shard{file.shards.length > 1 ? 's' : ''}</span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              
+              {/* Recently uploaded files in this session */}
+              {uploadedFiles.length > 0 && (
+                <div className="w-full max-w-2xl mt-12">
+                  <h2 className="text-2xl font-bold text-gray-900 mb-6">Recently Uploaded Files</h2>
+                  <div className="space-y-3">
+                    {uploadedFiles.map((file) => (
+                      <div key={file.id} className="bg-white rounded-lg border border-gray-200 p-5">
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex-1 min-w-0">
+                            <h3 className="text-base font-semibold text-gray-900 truncate">
+                              {file.filename}
+                            </h3>
+                            <div className="flex items-center gap-3 text-sm text-gray-500 mt-1">
+                              <span>{Math.round(file.size / 1024)} KB</span>
+                              <span>•</span>
+                              <span>{new Date(file.uploadedAt).toLocaleString()}</span>
+                            </div>
+                            <div className="mt-2">
+                              <code className="text-xs text-gray-600 bg-gray-100 px-2 py-1 rounded">
+                                {file.cid}
+                              </code>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         );
@@ -203,21 +348,23 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
-      <Header />
-      {renderNavigation()}
-      <main>
-        {renderContent()}
-      </main>
+    <ErrorBoundary>
+      <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
+        <Header />
+        {renderNavigation()}
+        <main>
+          {renderContent()}
+        </main>
 
-      {alert && (
-        <Alert
-          type={alert.type}
-          message={alert.message}
-          onClose={handleCloseAlert}
-        />
-      )}
-    </div>
+        {alert && (
+          <Alert
+            type={alert.type}
+            message={alert.message}
+            onClose={handleCloseAlert}
+          />
+        )}
+      </div>
+    </ErrorBoundary>
   );
 }
 
