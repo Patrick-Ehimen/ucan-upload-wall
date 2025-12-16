@@ -260,6 +260,9 @@ export async function keystoreVerify(data: Uint8Array, signature: Uint8Array): P
 /**
  * Encrypt an Ed25519 archive object using the worker's AES key.
  * The archive is serialized to JSON (Uint8Array -> array) before encryption.
+ * 
+ * @param archive - Ed25519Signer archive with id and keys
+ * @returns Encrypted ciphertext and IV
  */
 export async function encryptArchive(archive: { id: string; keys: Record<string, Uint8Array> }): Promise<{ ciphertext: Uint8Array; iv: Uint8Array }> {
   console.log('[secure-ed25519-did] 🔒 encryptArchive() called');
@@ -281,6 +284,10 @@ export async function encryptArchive(archive: { id: string; keys: Record<string,
 /**
  * Decrypt an Ed25519 archive object using the worker's AES key.
  * The decrypted JSON is deserialized back to the archive format (array -> Uint8Array).
+ * 
+ * @param ciphertext - Encrypted archive bytes
+ * @param iv - Initialization vector used for encryption
+ * @returns Decrypted Ed25519Signer archive
  */
 export async function decryptArchive(ciphertext: Uint8Array, iv: Uint8Array): Promise<{ id: string; keys: Record<string, Uint8Array> }> {
   console.log('[secure-ed25519-did] 🔓 decryptArchive() called');

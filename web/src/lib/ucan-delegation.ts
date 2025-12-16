@@ -14,7 +14,6 @@ import { WebAuthnDIDProvider, WebAuthnCredentialInfo } from './webauthn-did';
 import {
   initEd25519KeystoreWithPrfSeed,
   generateWorkerEd25519DID,
-  keystoreSign,
   encryptArchive,
   decryptArchive
 } from './secure-ed25519-did';
@@ -59,7 +58,7 @@ export class UCANDelegationService {
   private webauthnProvider: WebAuthnDIDProvider | null = null;
   private ed25519Keypair: Ed25519KeyPair | null = null;
   private storachaClient: Client.Client | null = null;
-  private ed25519Archive: any | null = null;
+  private ed25519Archive: { id: string; keys: Record<string, Uint8Array> } | null = null;
 
   /**
    * Initialize or load existing Ed25519 DID
@@ -246,7 +245,7 @@ export class UCANDelegationService {
 
   /**
    * Get a UCAN Signer backed by the worker keystore.
-   * This always uses the worker-derived Ed25519 DID and keystoreSign().
+   * Reconstructs Ed25519Signer from encrypted archive stored in localStorage.
    */
   private async getWorkerPrincipal(): Promise<UcanSigner<UcanDID<'key'>>> {
     if (!this.ed25519Keypair || !this.ed25519Archive) {
@@ -256,7 +255,7 @@ export class UCANDelegationService {
     // Reconstruct a full Ed25519Signer from the archive produced in the worker.
     // This gives Storacha a principal with the exact shape it expects, including
     // sign(), verify(), encode(), toArchive(), etc.
-    const principal = Ed25519Principal.from(this.ed25519Archive!) as unknown as UcanSigner<UcanDID<'key'>>;
+    const principal = Ed25519Principal.from(this.ed25519Archive!) as UcanSigner<UcanDID<'key'>>;
     return principal;
   }
 
