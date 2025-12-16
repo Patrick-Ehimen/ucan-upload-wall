@@ -1,5 +1,7 @@
 # 🔐 UCAN Upload Wall
 
+> **⚠️ SECURITY WARNING**: This code has **NOT been security audited** and should **NOT be used in production**. See **[SECURITY.md](./SECURITY.md)** for critical security considerations, attack vectors, and limitations.
+
 A browser-only file upload application powered by **WebAuthn DIDs**, **worker-based Ed25519 keystore**, and **UCAN delegations** on Storacha.
 
 ## 🏗️ Architecture
@@ -107,11 +109,33 @@ npm run dev
 
 ## 🔐 Security
 
+> **⚠️ READ FIRST**: Please review **[SECURITY.md](./SECURITY.md)** for critical security warnings and attack vectors.
+
+### Current Implementation (Not Secure)
+
 - **WebAuthn PRF Seed**: Deterministic seed from WebAuthn credential
 - **AES-GCM Encryption**: Archive encrypted with worker-derived AES key
-- **Worker Isolation**: Private keys never exposed to main thread
+- **Worker Isolation**: Private keys never exposed to main thread (but vulnerable to code injection)
 - **Deterministic Salt**: Same PRF seed → same AES key → same Ed25519 DID
-- **Encrypted Storage**: Archive stored encrypted in localStorage
+- **Encrypted Storage**: Archive stored encrypted in localStorage (accessible to malicious code)
+
+### ⚠️ Known Vulnerabilities
+
+This architecture is **fundamentally insecure** because:
+- Web Workers do **NOT** provide security isolation from malicious code
+- Injected code can read secrets used for encryption/decryption
+- localStorage is accessible to any code running in the same origin
+- Ed25519 private keys exist in software (JavaScript/WASM) memory
+
+### 🛡️ Secure Alternative
+
+The **most secure approach** would be using **P-256 DIDs exclusively**, where private keys never leave hardware security modules (TPM/Secure Enclave). Unfortunately, Storacha currently only supports Ed25519.
+
+We have implemented P-256 support in our fork: **[NiKrause/ucanto (p256 branch)](https://github.com/NiKrause/ucanto/tree/p256)**
+
+This needs to be integrated into **[storacha/upload-service](https://github.com/storacha/upload-service)** for production use.
+
+See **[SECURITY.md](./SECURITY.md)** for complete details.
 
 ## 🛠️ Technical Details
 
@@ -145,3 +169,7 @@ npm run dev
 - [Storacha Documentation](https://docs.storacha.network/)
 - [UCAN Specification](https://github.com/ucan-wg/spec)
 - [WebAuthn Guide](https://webauthn.guide/)
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](./LICENSE) file for details.
