@@ -1,13 +1,11 @@
-import { Lock, Shield } from 'lucide-react';
+import { Shield } from 'lucide-react';
 import { UCANDelegationService } from '../lib/ucan-delegation';
 
 interface HeaderProps {
-  onLockSession?: () => void;
   delegationService?: UCANDelegationService;
 }
 
-export function Header({ onLockSession, delegationService }: HeaderProps) {
-  const isUsingEncrypted = delegationService?.isUsingEncryptedKeystore() ?? false;
+export function Header({ delegationService }: HeaderProps) {
   const currentDID = delegationService?.getCurrentDID();
   
   return (
@@ -23,40 +21,17 @@ export function Header({ onLockSession, delegationService }: HeaderProps) {
             </p>
           </div>
           
-          {/* Security indicator and lock button */}
+              {/* Security indicator */}
           {currentDID && (
             <div className="flex items-center gap-3">
               {/* Security status */}
               <div 
                 className="flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-50 border border-gray-200"
-                title={isUsingEncrypted 
-                  ? "🔐 Hardware-Protected: Ed25519 private key encrypted with AES-GCM 256-bit. Encryption key stored in WebAuthn hardware authenticator (largeBlob/hmac-secret). Protected from XSS and malicious extensions." 
-                  : "⚠️ Unencrypted: Ed25519 private key stored in browser localStorage without encryption. Vulnerable to XSS and malicious extensions. Use hardware-protected encryption for better security."}
+                title="Ed25519 DID active. Keys are stored locally in your browser (no extra WebAuthn keystore encryption)."
               >
-                {isUsingEncrypted ? (
-                  <>
-                    <Lock className="h-4 w-4 text-green-600" />
-                    <span className="text-sm font-medium text-green-700">🔐 Hardware-Protected</span>
-                  </>
-                ) : (
-                  <>
-                    <Shield className="h-4 w-4 text-yellow-600" />
-                    <span className="text-sm font-medium text-yellow-700">⚠️ Unencrypted</span>
-                  </>
-                )}
+                <Shield className="h-4 w-4 text-blue-600" />
+                <span className="text-sm font-medium text-blue-700">Ed25519 DID Active</span>
               </div>
-              
-              {/* Lock session button (only for encrypted keystores) */}
-              {isUsingEncrypted && onLockSession && (
-                <button
-                  onClick={onLockSession}
-                  className="flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-100 hover:bg-gray-200 border border-gray-300 transition-colors"
-                  title="Lock session"
-                >
-                  <Lock className="h-4 w-4 text-gray-700" />
-                  <span className="text-sm font-medium text-gray-700">Lock</span>
-                </button>
-              )}
             </div>
           )}
         </div>

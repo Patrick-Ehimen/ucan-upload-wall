@@ -8,13 +8,22 @@
 import * as Client from '@storacha/client';
 import * as Proof from '@storacha/client/proof';
 import { StoreMemory } from '@storacha/client/stores/memory';
+import * as Ed25519Principal from '@ucanto/principal/ed25519';
+import type { Signer as UcanSigner, DID as UcanDID } from '@ucanto/interface';
 import { WebAuthnDIDProvider, WebAuthnCredentialInfo } from './webauthn-did';
-import { createEd25519DID, SecureEd25519DIDProvider } from './secure-ed25519-did';
+import {
+  initEd25519KeystoreWithPrfSeed,
+  generateWorkerEd25519DID,
+  keystoreSign,
+  encryptArchive,
+  decryptArchive
+} from './secure-ed25519-did';
 
 // Storage keys for localStorage
 const STORAGE_KEYS = {
   WEBAUTHN_CREDENTIAL: 'webauthn_credential_info',
   ED25519_KEYPAIR: 'ed25519_keypair',
+  ED25519_ARCHIVE_ENCRYPTED: 'ed25519_archive_encrypted',
   ENCRYPTED_KEYSTORE_CREDENTIAL_ID: 'encrypted_keystore_credential_id',
   STORACHA_KEY: 'storacha_key',
   STORACHA_PROOF: 'storacha_proof',
@@ -49,8 +58,8 @@ export interface DelegationInfo {
 export class UCANDelegationService {
   private webauthnProvider: WebAuthnDIDProvider | null = null;
   private ed25519Keypair: Ed25519KeyPair | null = null;
-  private secureEd25519Provider: SecureEd25519DIDProvider | null = null;
   private storachaClient: Client.Client | null = null;
+  private ed25519Archive: any | null = null;
 
   /**
    * Initialize or load existing Ed25519 DID
@@ -71,58 +80,97 @@ export class UCANDelegationService {
         console.log('Found stored Ed25519 keypair, restoring...');
         const keypair: Ed25519KeyPair = JSON.parse(storedKeypair);
         this.ed25519Keypair = keypair;
+        
+        // Restore encrypted archive from localStorage and decrypt via worker
+        const storedEncrypted = localStorage.getItem(STORAGE_KEYS.ED25519_ARCHIVE_ENCRYPTED);
+        if (storedEncrypted) {
+          // Ensure worker is initialized (needed for decryption)
+          await this.initializeWebAuthnDID(false);
+          const storedCredential = localStorage.getItem(STORAGE_KEYS.WEBAUTHN_CREDENTIAL);
+          if (storedCredential) {
+            const credentialInfo: WebAuthnCredentialInfo = JSON.parse(storedCredential);
+            const prfSeed = new Uint8Array(Object.values(credentialInfo.rawCredentialId as any));
+            await initEd25519KeystoreWithPrfSeed(prfSeed);
+            
+            // Decrypt archive
+            const encryptedArchive = JSON.parse(storedEncrypted);
+            const ciphertext = new Uint8Array(
+              encryptedArchive.ciphertext.match(/.{1,2}/g)!.map((byte: string) => parseInt(byte, 16))
+            );
+            const iv = new Uint8Array(
+              encryptedArchive.iv.match(/.{1,2}/g)!.map((byte: string) => parseInt(byte, 16))
+            );
+            this.ed25519Archive = await decryptArchive(ciphertext, iv);
+            console.log('✅ Successfully decrypted and restored Ed25519 archive');
+          } else {
+            console.warn('WebAuthn credential missing, cannot decrypt archive');
+            throw new Error('WebAuthn credential required to decrypt archive');
+          }
+        } else {
+          console.warn('Encrypted archive not found in localStorage');
+          throw new Error('Ed25519 archive missing');
+        }
+        
         console.log('✅ Successfully restored Ed25519 DID:', keypair.did);
         return keypair;
       } catch (error) {
-        console.warn('Failed to restore stored Ed25519 keypair, creating new one');
+        console.warn('Failed to restore stored Ed25519 keypair, creating new one', error);
         localStorage.removeItem(STORAGE_KEYS.ED25519_KEYPAIR);
+        localStorage.removeItem(STORAGE_KEYS.ED25519_ARCHIVE_ENCRYPTED);
       }
     }
 
-    // Generate new Ed25519 keypair
-    console.log('Generating new Ed25519 keypair...');
-    
-    // Try native Ed25519 support first
-    let publicKey: Uint8Array;
-    let privateKey: Uint8Array;
-    
-    try {
-      const keyPair = await crypto.subtle.generateKey(
-        { name: 'Ed25519' } as any,
-        true,
-        ['sign', 'verify']
-      );
-      
-      const publicKeySpki = await crypto.subtle.exportKey('spki', keyPair.publicKey);
-      const privateKeyPkcs8 = await crypto.subtle.exportKey('pkcs8', keyPair.privateKey);
-      
-      // Extract raw bytes (last 32 bytes)
-      publicKey = new Uint8Array(publicKeySpki).slice(-32);
-      privateKey = new Uint8Array(privateKeyPkcs8).slice(-32);
-      
-      console.log('✅ Generated Ed25519 keypair using native crypto');
-    } catch (error) {
-      console.warn('Native Ed25519 not available, using fallback');
-      // Fallback: random bytes (not cryptographically proper Ed25519, but will work for DID format)
-      privateKey = crypto.getRandomValues(new Uint8Array(32));
-      const publicKeyHash = await crypto.subtle.digest('SHA-256', privateKey);
-      publicKey = new Uint8Array(publicKeyHash).slice(0, 32);
+    // Generate new Ed25519 keypair inside the web worker, seeded from WebAuthn
+    console.log('Generating new Ed25519 keypair via worker + WebAuthn PRF seed...');
+
+    // Ensure we have a WebAuthn credential (this may trigger a WebAuthn flow)
+    await this.initializeWebAuthnDID(false);
+
+    const storedCredential = localStorage.getItem(STORAGE_KEYS.WEBAUTHN_CREDENTIAL);
+    if (!storedCredential) {
+      throw new Error('WebAuthn credential is required to derive PRF seed for Ed25519 keystore');
     }
-    
-    const did = await createEd25519DID(publicKey);
-    console.log('Generated DID:', did);
-    
+
+    let prfSeed: Uint8Array;
+    try {
+      const credentialInfo: WebAuthnCredentialInfo = JSON.parse(storedCredential);
+      // rawCredentialId is stored as an object; convert back to Uint8Array
+      prfSeed = new Uint8Array(Object.values(credentialInfo.rawCredentialId as any));
+    } catch (error) {
+      console.error('Failed to parse stored WebAuthn credential for PRF seed', error);
+      throw new Error('Invalid stored WebAuthn credential; cannot derive PRF seed');
+    }
+
+    console.log('Deriving worker keystore from WebAuthn PRF seed (rawCredentialId)', {
+      prfSeedLength: prfSeed.length
+    });
+
+    await initEd25519KeystoreWithPrfSeed(prfSeed);
+
+    const { publicKey, did, archive } = await generateWorkerEd25519DID();
+    console.log('Generated worker-based Ed25519 DID from WebAuthn PRF-derived keystore:', did);
+
     const keypair: Ed25519KeyPair = {
       publicKey: Array.from(publicKey).map(b => b.toString(16).padStart(2, '0')).join(''),
-      privateKey: Array.from(privateKey).map(b => b.toString(16).padStart(2, '0')).join(''),
+      // Private key is encoded in the Ed25519 archive; we don't store it here.
+      privateKey: '',
       did
     };
     
     // Store keypair in localStorage
     localStorage.setItem(STORAGE_KEYS.ED25519_KEYPAIR, JSON.stringify(keypair));
     
+    // Encrypt archive using worker's AES key and store it
+    const { ciphertext, iv } = await encryptArchive(archive);
+    const encryptedArchive = {
+      ciphertext: Array.from(ciphertext).map(b => b.toString(16).padStart(2, '0')).join(''),
+      iv: Array.from(iv).map(b => b.toString(16).padStart(2, '0')).join('')
+    };
+    localStorage.setItem(STORAGE_KEYS.ED25519_ARCHIVE_ENCRYPTED, JSON.stringify(encryptedArchive));
+    
     this.ed25519Keypair = keypair;
-    console.log('✅ Created and stored new Ed25519 DID:', did);
+    this.ed25519Archive = archive;
+    console.log('✅ Created and stored new Ed25519 DID with encrypted archive:', did);
     
     return keypair;
   }
@@ -190,123 +238,26 @@ export class UCANDelegationService {
   }
 
   /**
-   * Initialize or load hardware-protected Ed25519 DID with encrypted keystore
-   * Requires biometric authentication
-   */
-  async initializeSecureEd25519DID(
-    encryptionMethod: 'largeBlob' | 'hmac-secret' = 'hmac-secret',
-    force = false
-  ): Promise<void> {
-    console.log('🔐 Initializing hardware-protected Ed25519 DID...');
-    
-    // If we already have a provider and not forcing, return it
-    if (this.secureEd25519Provider && !force) {
-      console.log('Using cached secure Ed25519 provider');
-      return;
-    }
-    
-    // Check for existing encrypted keystore credential ID
-    const storedCredentialId = localStorage.getItem(STORAGE_KEYS.ENCRYPTED_KEYSTORE_CREDENTIAL_ID);
-    
-    if (storedCredentialId && !force) {
-      try {
-        console.log('Found encrypted keystore, unlocking with biometric...');
-        // Unlock existing (triggers biometric prompt)
-        this.secureEd25519Provider = await SecureEd25519DIDProvider.unlock(storedCredentialId);
-        console.log('✅ Successfully unlocked Ed25519 DID:', this.secureEd25519Provider.getDID());
-      } catch (error) {
-        console.error('Failed to unlock encrypted keystore:', error);
-        // Clear invalid credential ID
-        localStorage.removeItem(STORAGE_KEYS.ENCRYPTED_KEYSTORE_CREDENTIAL_ID);
-        throw new Error(`Failed to unlock encrypted keystore: ${error}`);
-      }
-    } else {
-      try {
-        console.log('Creating new encrypted keystore with biometric...');
-        // Create new (triggers biometric prompt)
-        this.secureEd25519Provider = await SecureEd25519DIDProvider.create({ 
-          encryptionMethod,
-          userId: `ucan-upload-wall-${Date.now()}`,
-          displayName: 'UCAN Upload Wall User'
-        });
-        
-        // Save credential ID for future unlocks
-        const credentialId = this.secureEd25519Provider.getCredentialId();
-        localStorage.setItem(STORAGE_KEYS.ENCRYPTED_KEYSTORE_CREDENTIAL_ID, credentialId);
-        
-        console.log('✅ Created hardware-protected Ed25519 DID:', this.secureEd25519Provider.getDID());
-      } catch (error) {
-        console.error('Failed to create encrypted keystore:', error);
-        throw new Error(`Failed to create encrypted keystore: ${error}`);
-      }
-    }
-  }
-
-  /**
-   * Unlock existing encrypted keystore (triggers biometric prompt)
-   */
-  async unlockSession(): Promise<void> {
-    const credentialId = localStorage.getItem(STORAGE_KEYS.ENCRYPTED_KEYSTORE_CREDENTIAL_ID);
-    if (!credentialId) {
-      throw new Error('No encrypted keystore found. Please create one first.');
-    }
-    
-    console.log('🔓 Unlocking session with biometric...');
-    try {
-      this.secureEd25519Provider = await SecureEd25519DIDProvider.unlock(credentialId);
-      console.log('✅ Session unlocked:', this.secureEd25519Provider.getDID());
-    } catch (error) {
-      console.error('Failed to unlock session:', error);
-      throw new Error(`Failed to unlock session: ${error}`);
-    }
-  }
-
-  /**
-   * Lock the current session (clears private key from memory)
-   */
-  lockSession(): void {
-    if (this.secureEd25519Provider) {
-      console.log('🔒 Locking session...');
-      this.secureEd25519Provider.lock();
-      this.secureEd25519Provider = null;
-      console.log('✅ Session locked');
-    }
-  }
-
-  /**
-   * Check if using hardware-protected encrypted keystore
-   */
-  isUsingEncryptedKeystore(): boolean {
-    const credentialId = localStorage.getItem(STORAGE_KEYS.ENCRYPTED_KEYSTORE_CREDENTIAL_ID);
-    return credentialId !== null;
-  }
-
-  /**
-   * Check if session is currently locked
-   * Returns true if using encrypted keystore but session is not unlocked
-   */
-  isSessionLocked(): boolean {
-    if (!this.isUsingEncryptedKeystore()) {
-      return false; // Not using encryption, so never locked
-    }
-    // Session is locked if we don't have a provider or can't get DID
-    return this.secureEd25519Provider === null;
-  }
-
-  /**
-   * Get current DID (prioritizes secure provider > unencrypted > WebAuthn)
+   * Get current DID (prioritizes Ed25519 > WebAuthn)
    */
   getCurrentDID(): string | null {
-    // Prioritize secure provider if available
-    if (this.secureEd25519Provider) {
-      try {
-        return this.secureEd25519Provider.getDID();
-      } catch (error) {
-        console.warn('Failed to get DID from secure provider:', error);
-      }
-    }
-    // Fall back to unencrypted or WebAuthn
     return this.ed25519Keypair?.did || this.webauthnProvider?.did || null;
+  }
+
+  /**
+   * Get a UCAN Signer backed by the worker keystore.
+   * This always uses the worker-derived Ed25519 DID and keystoreSign().
+   */
+  private async getWorkerPrincipal(): Promise<UcanSigner<UcanDID<'key'>>> {
+    if (!this.ed25519Keypair || !this.ed25519Archive) {
+      await this.initializeEd25519DID();
+    }
+
+    // Reconstruct a full Ed25519Signer from the archive produced in the worker.
+    // This gives Storacha a principal with the exact shape it expects, including
+    // sign(), verify(), encode(), toArchive(), etc.
+    const principal = Ed25519Principal.from(this.ed25519Archive!) as unknown as UcanSigner<UcanDID<'key'>>;
+    return principal;
   }
 
   /**
@@ -433,38 +384,14 @@ export class UCANDelegationService {
       
       const Client = await import('@storacha/client');
       const { StoreMemory } = await import('@storacha/client/stores/memory');
-      const ed25519 = await import('@ucanto/principal/ed25519');
-      
-      // Get principal based on which keystore we're using
-      let principal;
-      
-      // Prioritize secure provider if using encrypted keystore
-      if (this.secureEd25519Provider) {
-        console.log('Using encrypted keystore DID for deletion...');
-        try {
-          principal = await this.secureEd25519Provider.createUcantoSigner();
-        } catch (error) {
-          console.error('Failed to get key from secure provider:', error);
-          throw new Error('Session may be locked. Please unlock and try again.');
-        }
-      } else {
-        // Fall back to ucanto Ed25519 signer for backward compatibility
-        const UCANTO_ED25519_KEY = 'ucanto_ed25519_signer';
-        const storedSigner = localStorage.getItem(UCANTO_ED25519_KEY);
-        
-        if (storedSigner) {
-          principal = ed25519.Signer.parse(storedSigner);
-        } else {
-          principal = await ed25519.Signer.generate();
-          localStorage.setItem(UCANTO_ED25519_KEY, ed25519.format(principal));
-        }
-      }
-      
+
+      // Use worker-backed Ed25519 principal (WebAuthn PRF → keystore)
+      const principal = await this.getWorkerPrincipal();
+
       const store = new StoreMemory();
       const client = await Client.create({
         principal,
-        store,
-        proofs: [delegation] as any
+        store
       });
       
       if (delegation.capabilities && delegation.capabilities.length > 0) {
@@ -666,39 +593,15 @@ export class UCANDelegationService {
       // Import required modules
       const Client = await import('@storacha/client');
       const { StoreMemory } = await import('@storacha/client/stores/memory');
-      const ed25519 = await import('@ucanto/principal/ed25519');
-      
-      // Get principal based on which keystore we're using
-      let principal;
-      
-      // Prioritize secure provider if using encrypted keystore
-      if (this.secureEd25519Provider) {
-        console.log('Using encrypted keystore DID for listing...');
-        try {
-          principal = await this.secureEd25519Provider.createUcantoSigner();
-        } catch (error) {
-          console.error('Failed to get key from secure provider:', error);
-          throw new Error('Session may be locked. Please unlock and try again.');
-        }
-      } else {
-        // Fall back to ucanto Ed25519 signer for backward compatibility
-        const UCANTO_ED25519_KEY = 'ucanto_ed25519_signer';
-        const storedSigner = localStorage.getItem(UCANTO_ED25519_KEY);
-        
-        if (storedSigner) {
-          principal = ed25519.Signer.parse(storedSigner);
-        } else {
-          principal = await ed25519.Signer.generate();
-          localStorage.setItem(UCANTO_ED25519_KEY, ed25519.format(principal));
-        }
-      }
-      
-      // Create Storacha client with the Ed25519 principal and delegation as proof
+
+      // Use worker-backed Ed25519 principal (WebAuthn PRF → keystore)
+      const principal = await this.getWorkerPrincipal();
+
+      // Create Storacha client with the Ed25519 principal
       const store = new StoreMemory();
       const client = await Client.create({
         principal,
-        store,
-        proofs: [delegation] as any
+        store
       });
       
       // Get space DID from delegation and set as current
@@ -764,53 +667,10 @@ export class UCANDelegationService {
       // Import required modules
       const Client = await import('@storacha/client');
       const { StoreMemory } = await import('@storacha/client/stores/memory');
-      const ed25519 = await import('@ucanto/principal/ed25519');
-      
-      // Get principal based on which keystore we're using
-      let principal;
-      
-      // Prioritize secure provider if using encrypted keystore
-      if (this.secureEd25519Provider) {
-        console.log('Using encrypted keystore DID for delegation operations...');
-        try {
-          // Create ucanto signer from the secure provider
-          principal = await this.secureEd25519Provider.createUcantoSigner();
-          console.log('✅ Using secure Ed25519 DID:', principal.did());
-        } catch (error) {
-          console.error('Failed to get key from secure provider:', error);
-          throw new Error('Session may be locked. Please unlock and try again.');
-        }
-      } else {
-        // Fall back to ucanto Ed25519 signer for backward compatibility
-        const UCANTO_ED25519_KEY = 'ucanto_ed25519_signer';
-        const storedSigner = localStorage.getItem(UCANTO_ED25519_KEY);
-        
-        if (storedSigner) {
-          console.log('Loading existing ucanto Ed25519 signer...');
-          try {
-            principal = ed25519.Signer.parse(storedSigner);
-            console.log('✅ Loaded ucanto signer with DID:', principal.did());
-          } catch (error) {
-            console.warn('Failed to parse stored signer, generating new one');
-            principal = await ed25519.Signer.generate();
-            localStorage.setItem(UCANTO_ED25519_KEY, ed25519.format(principal));
-          }
-        } else {
-          console.log('Generating new ucanto Ed25519 signer...');
-          principal = await ed25519.Signer.generate();
-          localStorage.setItem(UCANTO_ED25519_KEY, ed25519.format(principal));
-          console.log('✅ Generated new ucanto signer with DID:', principal.did());
-          
-          // Also update our Ed25519KeyPair storage to keep it in sync
-          this.ed25519Keypair = {
-            publicKey: '', // We don't need these anymore since we're using ucanto format
-            privateKey: '',
-            did: principal.did()
-          };
-          localStorage.setItem(STORAGE_KEYS.ED25519_KEYPAIR, JSON.stringify(this.ed25519Keypair));
-        }
-      }
-      
+
+      // Use worker-backed Ed25519 principal (WebAuthn PRF → keystore)
+      const principal = await this.getWorkerPrincipal();
+
       console.log('Using principal DID:', principal.did());
       console.log('Delegation audience (should match):', delegationInfo.toAudience);
       
@@ -831,12 +691,11 @@ export class UCANDelegationService {
         );
       }
       
-      // Create Storacha client with the Ed25519 principal and delegation as proof
+      // Create Storacha client with the Ed25519 principal
       const store = new StoreMemory();
       const client = await Client.create({
         principal,
         store,
-        proofs: [delegation] as any
       });
       
       console.log('✅ Created Storacha client with delegation');

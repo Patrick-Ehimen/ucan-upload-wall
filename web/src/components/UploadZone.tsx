@@ -2,7 +2,6 @@ import { useCallback, useState, useEffect } from 'react';
 import { Upload, FileText, X, Shield, Smartphone, Copy, Check, AlertCircle, Lock } from 'lucide-react';
 import { UCANDelegationService } from '../lib/ucan-delegation';
 import { WebAuthnDIDProvider } from '../lib/webauthn-did';
-import { checkExtensionSupport } from '../lib/keystore-encryption';
 
 interface UploadZoneProps {
   onFileSelect: (file: File) => void;
@@ -25,17 +24,6 @@ export function UploadZone({ onFileSelect, isUploading, delegationService, onDid
   useEffect(() => {
     // Check WebAuthn support
     setWebauthnSupported(WebAuthnDIDProvider.isSupported());
-    
-    // Check encryption extension support and pick best method
-    checkExtensionSupport().then(support => {
-      setEncryptionSupported(support.largeBlob || support.hmacSecret);
-      // Prefer hmac-secret for wider browser support
-      if (support.hmacSecret) {
-        setEncryptionMethod('hmac-secret');
-      } else if (support.largeBlob) {
-        setEncryptionMethod('largeBlob');
-      }
-    });
     
     // Load existing DID
     const did = delegationService.getCurrentDID();

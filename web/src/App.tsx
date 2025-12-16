@@ -5,7 +5,6 @@ import { UploadZone } from './components/UploadZone';
 import { Alert } from './components/Alert';
 import { DelegationManager } from './components/DelegationManager';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import { SessionLockScreen } from './components/SessionLockScreen';
 import { useFileUpload } from './hooks/useFileUpload';
 import { UploadedFile } from './types/upload';
 
@@ -21,22 +20,8 @@ function App() {
   const [didCreated, setDidCreated] = useState(false);
   const { uploadFile, isUploading, error, delegationService } = useFileUpload();
   const [hasDeleteCapability, setHasDeleteCapability] = useState(false);
-  const [isSessionLocked, setIsSessionLocked] = useState(false);
   
   useEffect(() => {
-    // Check if session is locked
-    const usingEncryption = delegationService.isUsingEncryptedKeystore();
-    if (usingEncryption) {
-      const locked = delegationService.isSessionLocked();
-      setIsSessionLocked(locked);
-      
-      // If locked, don't check for DID
-      if (locked) {
-        setDidCreated(false);
-        return;
-      }
-    }
-    
     // Check if DID is available
     const hasDID = !!delegationService.getCurrentDID();
     setDidCreated(hasDID);
@@ -48,12 +33,6 @@ function App() {
   // Separate effect to load files only when DID is ready
   useEffect(() => {
     const loadStorachaFiles = async () => {
-      // Don't load if session is locked
-      if (isSessionLocked) {
-        console.log('Skipping file load - session is locked');
-        return;
-      }
-      
       // Only try to load if we have a DID (authenticated)
       if (!didCreated) {
         console.log('Skipping file load - DID not initialized yet');
@@ -79,7 +58,7 @@ function App() {
     };
     
     loadStorachaFiles();
-  }, [didCreated, isSessionLocked, delegationService]);
+  }, [didCreated, delegationService]);
   
   // Add a periodic check for DID creation (since it might happen async)
   useEffect(() => {
@@ -169,31 +148,6 @@ function App() {
     setDidCreated(hasDID);
   };
   
-  const handleUnlockSession = async () => {
-    try {
-      await delegationService.unlockSession();
-      setIsSessionLocked(false);
-      setDidCreated(true);
-    } catch (error) {
-      console.error('Failed to unlock session:', error);
-      setAlert({
-        type: 'error',
-        message: `Failed to unlock session: ${error instanceof Error ? error.message : 'Unknown error'}`,
-      });
-      throw error; // Re-throw for SessionLockScreen to handle
-    }
-  };
-  
-  const handleLockSession = () => {
-    delegationService.lockSession();
-    setIsSessionLocked(true);
-    setDidCreated(false);
-    setAlert({
-      type: 'success',
-      message: 'Session locked successfully',
-    });
-  };
-
   const renderNavigation = () => {
     return (
       <nav className="bg-white border-b border-gray-200 mb-6">
@@ -393,26 +347,10 @@ function App() {
     }
   };
 
-  // Show session lock screen if session is locked
-  if (isSessionLocked) {
-    return (
-      <ErrorBoundary>
-        <SessionLockScreen onUnlock={handleUnlockSession} />
-        {alert && (
-          <Alert
-            type={alert.type}
-            message={alert.message}
-            onClose={handleCloseAlert}
-          />
-        )}
-      </ErrorBoundary>
-    );
-  }
-
   return (
     <ErrorBoundary>
       <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
-        <Header onLockSession={handleLockSession} delegationService={delegationService} />
+        <Header delegationService={delegationService} />
         {renderNavigation()}
         <main>
           {renderContent()}

@@ -1,50 +1,23 @@
 /**
- * Hardware-Protected Ed25519 DID Provider
- * 
- * Creates Ed25519 DIDs for UCAN with hardware-protected private keys.
- * Uses WebAuthn largeBlob/hmac-secret to protect the encryption key.
- * 
- * @example
- * // Create new hardware-protected Ed25519 DID
- * const provider = await SecureEd25519DIDProvider.create({
- *   encryptionMethod: 'hmac-secret' // Default (or 'largeBlob' for Chrome 106+)
- * });
- * 
- * // Get DID for UCAN audience/issuer
- * const did = provider.getDID(); // did:key:z6Mk...
- * 
- * // Use with ucanto for UCAN signing
- * const signer = await provider.createUcantoSigner();
- * const delegation = await delegate({
- *   issuer: signer,
- *   audience: targetDID,
- *   capabilities: [{ with: spaceDID, can: 'store/add' }]
- * });
- * 
- * // Later: unlock existing DID (requires biometric auth)
- * const provider = await SecureEd25519DIDProvider.unlock(credentialId);
- * 
- * // Lock session to clear private key from memory
- * provider.lock();
+ * Simple Ed25519 DID helpers + web worker–based keystore.
+ *
+ * - DID helpers: pure Ed25519 did:key generation (no OrbitDB, no WebAuthn extras)
+ * - Keystore: Ed25519 keypair + AES key live in a dedicated web worker
+ *   with encrypt/decrypt/sign/verify APIs.
+ *
+ * The keystore uses an HKDF-based PRF to turn an input seed into a secret
+ * AES-GCM key. Callers are free to derive that PRF seed however they like
+ * (e.g. from WebAuthn credential data).
+ *
+ * All keystore operations log clearly to the browser console.
  */
 
 import { varint } from 'multiformats';
 import { base58btc } from 'multiformats/bases/base58';
-import { 
-  WebAuthnDIDProvider, 
-  WebAuthnCredentialInfo 
-} from './webauthn-did';
-import {
-  generateSecretKey,
-  encryptWithAESGCM,
-  decryptWithAESGCM,
-  retrieveSKFromLargeBlob,
-  wrapSKWithHmacSecret,
-  unwrapSKWithHmacSecret,
-  storeEncryptedKeystore,
-  loadEncryptedKeystore,
-  checkExtensionSupport
-} from './keystore-encryption';
+import type {
+  KeystoreRequestMessage,
+  KeystoreResponseMessage
+} from '../workers/ed25519-keystore.worker';
 
 export interface Ed25519KeyPair {
   publicKey: Uint8Array;
@@ -52,26 +25,28 @@ export interface Ed25519KeyPair {
   did: string;
 }
 
-export interface SecureEd25519Config {
-  encryptionMethod?: 'largeBlob' | 'hmac-secret';
-  userId?: string;
-  displayName?: string;
-  domain?: string;
-}
+// -----------------------------------------------------------------------------
+// Legacy helpers (kept for backwards compatibility)
+// -----------------------------------------------------------------------------
 
 /**
- * Generate Ed25519 keypair using Web Crypto API
+ * Generate Ed25519 keypair using Web Crypto API.
+ *
+ * No WebAuthn or hardware-protection is applied here – callers are
+ * responsible for storing the key material wherever they like.
  */
-async function generateEd25519KeyPair(): Promise<{ publicKey: Uint8Array; privateKey: Uint8Array }> {
+export async function generateEd25519KeyPair(): Promise<{
+  publicKey: Uint8Array;
+  privateKey: Uint8Array;
+}> {
   try {
-    // Try to use native Ed25519 support if available
+    // Use native Ed25519 support where available.
     const keyPair = await crypto.subtle.generateKey(
       { name: 'Ed25519' } as any,
       true,
       ['sign', 'verify']
     );
 
-    // Export keys
     const publicKeySpki = await crypto.subtle.exportKey('spki', keyPair.publicKey);
     const privateKeyPkcs8 = await crypto.subtle.exportKey('pkcs8', keyPair.privateKey);
 
@@ -81,9 +56,9 @@ async function generateEd25519KeyPair(): Promise<{ publicKey: Uint8Array; privat
 
     return { publicKey, privateKey };
   } catch (error) {
-    console.warn('Native Ed25519 not available, generating deterministic keypair:', error);
-    
-    // Fallback: Generate random keypair (note: this won't have proper Ed25519 math)
+    console.warn('Native Ed25519 not available, falling back to random bytes:', error);
+
+    // Fallback: random private key, derive a stable public key via hash.
     const privateKey = crypto.getRandomValues(new Uint8Array(32));
     const publicKeyHash = await crypto.subtle.digest('SHA-256', privateKey);
     const publicKey = new Uint8Array(publicKeyHash).slice(0, 32);
@@ -93,7 +68,7 @@ async function generateEd25519KeyPair(): Promise<{ publicKey: Uint8Array; privat
 }
 
 /**
- * Create did:key DID from Ed25519 public key
+ * Create did:key from an Ed25519 public key.
  */
 export async function createEd25519DID(publicKeyBytes: Uint8Array): Promise<string> {
   if (publicKeyBytes.length !== 32) {
@@ -116,454 +91,213 @@ export async function createEd25519DID(publicKeyBytes: Uint8Array): Promise<stri
   return `did:key:${multikeyEncoded}`;
 }
 
-/**
- * Create WebAuthn credential with encryption extension support
- */
-async function createCredentialWithEncryption(
-  config: SecureEd25519Config,
-  secretKey: Uint8Array
-): Promise<WebAuthnCredentialInfo> {
-  const {
-    userId = `ucan-user-${Date.now()}`,
-    displayName = 'UCAN Upload Wall User',
-    domain = window.location.hostname,
-    encryptionMethod = 'hmac-secret' // Default to hmac-secret (wider browser support)
-  } = config;
+// -----------------------------------------------------------------------------
+// Web worker–backed Ed25519 keystore
+// -----------------------------------------------------------------------------
 
-  if (!WebAuthnDIDProvider.isSupported()) {
-    throw new Error('WebAuthn is not supported');
-  }
+let keystoreWorker: Worker | null = null;
+let nextRequestId = 1;
+const pendingRequests = new Map<number, { resolve: (value: any) => void; reject: (reason?: any) => void }>();
 
-  const challenge = crypto.getRandomValues(new Uint8Array(32));
-  const userIdBytes = new TextEncoder().encode(userId);
-
-  // Base credential options
-  let credentialOptions: any = {
-    publicKey: {
-      challenge,
-      rp: { name: 'UCAN Upload Wall', id: domain },
-      user: { id: userIdBytes, name: userId, displayName },
-      pubKeyCredParams: [
-        { alg: -7, type: 'public-key' },   // ES256
-        { alg: -257, type: 'public-key' }  // RS256
-      ],
-      authenticatorSelection: {
-        authenticatorAttachment: 'platform',
-        requireResidentKey: false,
-        residentKey: 'preferred',
-        userVerification: 'required'
-      },
-      timeout: 60000,
-      attestation: 'none'
-    }
-  };
-
-  // Add encryption extension based on method
-  if (encryptionMethod === 'largeBlob') {
-    credentialOptions.publicKey.extensions = {
-      largeBlob: {
-        support: 'required'
-      }
-    };
-  } else if (encryptionMethod === 'hmac-secret') {
-    // Try modern PRF extension first (WebAuthn Level 3)
-    credentialOptions.publicKey.extensions = {
-      prf: {} // Modern standard
-    };
-  }
-
-  const credential = await navigator.credentials.create(credentialOptions);
-  if (!credential) {
-    throw new Error('Failed to create WebAuthn credential');
-  }
-
-  console.log('✅ WebAuthn credential created');
-  
-  // Check if extension was actually enabled
-  const extensions = (credential as any).getClientExtensionResults();
-  console.log('🔍 Extension results:', extensions);
-  
-  // Verify the extension was enabled by the browser
-  if (encryptionMethod === 'largeBlob' && !extensions.largeBlob) {
-    throw new Error('largeBlob extension not supported - browser ignored extension request');
-  }
-  
-  if (encryptionMethod === 'hmac-secret') {
-    // Check for modern prf or legacy hmacCreateSecret
-    const hasPrf = extensions.prf?.enabled === true;
-    const hasHmac = extensions.hmacCreateSecret === true;
-    
-    if (!hasPrf && !hasHmac) {
-      throw new Error('hmac-secret/PRF extension not supported - browser ignored extension request');
-    }
-    
-    console.log('🔐 Extension enabled:', hasPrf ? 'prf' : 'hmacCreateSecret (legacy)');
-  }
-
-  // Extract public key
-  const publicKey = await WebAuthnDIDProvider.extractPublicKey(credential as PublicKeyCredential);
-
-  const credentialInfo: WebAuthnCredentialInfo = {
-    credentialId: WebAuthnDIDProvider.arrayBufferToBase64url((credential as PublicKeyCredential).rawId),
-    rawCredentialId: new Uint8Array((credential as PublicKeyCredential).rawId),
-    publicKey,
-    userId,
-    displayName,
-    did: '' // Will be set later
-  };
-
-  // Store secret key in WebAuthn device if using largeBlob
-  if (encryptionMethod === 'largeBlob') {
-    await storeSKInLargeBlob(credentialInfo.rawCredentialId, secretKey, domain);
-  }
-
-  return credentialInfo;
-}
-
-/**
- * Wrap secret key using PRF or hmac-secret extension
- * Tries modern PRF first, falls back to legacy hmac-secret
- */
-async function wrapSKWithPRF(
-  credentialId: Uint8Array,
-  secretKey: Uint8Array,
-  rpId: string
-): Promise<{wrappedSK: Uint8Array, wrappingIV: Uint8Array, salt: Uint8Array}> {
-  const salt = crypto.getRandomValues(new Uint8Array(32));
-  
-  // Try modern PRF extension first
-  try {
-    const assertion = await navigator.credentials.get({
-      publicKey: {
-        challenge: crypto.getRandomValues(new Uint8Array(32)),
-        allowCredentials: [{ id: credentialId, type: 'public-key' }],
-        rpId,
-        userVerification: 'required',
-        extensions: {
-          prf: {
-            eval: {
-              first: salt // Modern PRF API
-            }
-          }
-        }
-      }
-    });
-    
-    const extensions = (assertion as any).getClientExtensionResults();
-    
-    if (extensions.prf?.results?.first) {
-      console.log('🔐 Using modern PRF extension');
-      const prfOutput = new Uint8Array(extensions.prf.results.first);
-      const wrapped = await encryptWithAESGCM(secretKey, prfOutput.slice(0, 32));
-      return {
-        wrappedSK: wrapped.ciphertext,
-        wrappingIV: wrapped.iv,
-        salt
-      };
-    }
-  } catch (prfError) {
-    console.warn('PRF extension failed, trying legacy hmac-secret:', prfError);
-  }
-  
-  // Fallback to legacy hmac-secret
-  const assertion = await navigator.credentials.get({
-    publicKey: {
-      challenge: crypto.getRandomValues(new Uint8Array(32)),
-      allowCredentials: [{ id: credentialId, type: 'public-key' }],
-      rpId,
-      userVerification: 'required',
-      extensions: {
-        hmacGetSecret: { salt1: salt } // Legacy API
-      }
-    }
-  });
-  
-  const extensions = (assertion as any).getClientExtensionResults();
-  
-  if (!extensions.hmacGetSecret?.output1) {
-    throw new Error('Neither PRF nor hmac-secret extensions returned output');
-  }
-  
-  console.log('🔐 Using legacy hmac-secret extension');
-  const hmacOutput = new Uint8Array(extensions.hmacGetSecret.output1);
-  const wrapped = await encryptWithAESGCM(secretKey, hmacOutput.slice(0, 32));
-  
-  return {
-    wrappedSK: wrapped.ciphertext,
-    wrappingIV: wrapped.iv,
-    salt
-  };
-}
-
-/**
- * Store secret key in largeBlob (requires separate authentication)
- */
-async function storeSKInLargeBlob(
-  credentialId: Uint8Array,
-  secretKey: Uint8Array,
-  rpId: string
-): Promise<void> {
-  console.log('📦 Storing encryption key in WebAuthn largeBlob...');
-  
-  const assertion = await navigator.credentials.get({
-    publicKey: {
-      challenge: crypto.getRandomValues(new Uint8Array(32)),
-      allowCredentials: [{
-        id: credentialId,
-        type: 'public-key'
-      }],
-      rpId,
-      userVerification: 'required',
-      extensions: {
-        largeBlob: {
-          write: secretKey.buffer
-        }
-      }
-    }
-  });
-
-  const extensions = (assertion as any).getClientExtensionResults();
-  if (!extensions.largeBlob || !extensions.largeBlob.written) {
-    throw new Error('Failed to write to largeBlob');
-  }
-
-  console.log('✅ Encryption key stored in hardware');
-}
-
-/**
- * Hardware-protected Ed25519 DID Provider
- */
-export class SecureEd25519DIDProvider {
-  private webauthnCredential: WebAuthnCredentialInfo;
-  private keypair: Ed25519KeyPair | null = null;
-  private encryptionMethod: 'largeBlob' | 'hmac-secret';
-  private domain: string;
-  private sessionUnlocked: boolean = false;
-
-  private constructor(
-    credential: WebAuthnCredentialInfo,
-    keypair: Ed25519KeyPair,
-    encryptionMethod: 'largeBlob' | 'hmac-secret',
-    domain: string
-  ) {
-    this.webauthnCredential = credential;
-    this.keypair = keypair;
-    this.encryptionMethod = encryptionMethod;
-    this.domain = domain;
-    this.sessionUnlocked = true;
-  }
-
-  /**
-   * Create new hardware-protected Ed25519 DID
-   */
-  static async create(config: SecureEd25519Config = {}): Promise<SecureEd25519DIDProvider> {
-    const {
-      encryptionMethod = 'hmac-secret', // Default to hmac-secret (wider browser support)
-      domain = window.location.hostname
-    } = config;
-
-    console.log('🔐 Creating hardware-protected Ed25519 DID...');
-    console.log('🔍 Encryption method:', encryptionMethod);
-    console.log('🔍 Config passed:', config);
-
-    // Check extension support
-    const support = await checkExtensionSupport();
-    console.log('🔍 Extension support:', support);
-    if (encryptionMethod === 'largeBlob' && !support.largeBlob) {
-      throw new Error('largeBlob extension not supported on this device');
-    }
-    if (encryptionMethod === 'hmac-secret' && !support.hmacSecret) {
-      throw new Error('hmac-secret extension not supported on this device');
-    }
-
-    // Generate Ed25519 keypair
-    const { publicKey, privateKey } = await generateEd25519KeyPair();
-    const did = await createEd25519DID(publicKey);
-
-    console.log('🆔 Generated Ed25519 DID:', did);
-
-    // Generate encryption secret key
-    const secretKey = generateSecretKey();
-
-    // Encrypt the private key
-    const { ciphertext, iv } = await encryptWithAESGCM(privateKey, secretKey);
-
-    // Create WebAuthn credential with encryption support
-    const credential = await createCredentialWithEncryption(config, secretKey);
-
-    // Prepare encrypted data for storage
-    let encryptedData: any = {
-      ciphertext,
-      iv,
-      credentialId: credential.credentialId,
-      publicKey: publicKey,
-      did,
-      encryptionMethod
-    };
-
-    // If using hmac-secret/PRF, wrap the secret key
-    if (encryptionMethod === 'hmac-secret') {
-      const wrapped = await wrapSKWithPRF(
-        credential.rawCredentialId,
-        secretKey,
-        domain
-      );
-      encryptedData.wrappedSK = wrapped.wrappedSK;
-      encryptedData.wrappingIV = wrapped.wrappingIV;
-      encryptedData.salt = wrapped.salt;
-    }
-
-    // Store encrypted keystore
-    await storeEncryptedKeystore(encryptedData, credential.credentialId);
-
-    console.log('✅ Ed25519 DID created and secured with hardware encryption');
-
-    const keypair: Ed25519KeyPair = { publicKey, privateKey, did };
-    return new SecureEd25519DIDProvider(credential, keypair, encryptionMethod, domain);
-  }
-
-  /**
-   * Unlock existing hardware-protected Ed25519 DID
-   */
-  static async unlock(credentialId: string, config: SecureEd25519Config = {}): Promise<SecureEd25519DIDProvider> {
-    const { domain = window.location.hostname } = config;
-
-    console.log('🔓 Unlocking hardware-protected Ed25519 DID...');
-
-    // Load encrypted keystore
-    const encryptedData = await loadEncryptedKeystore(credentialId);
-    const encryptionMethod = encryptedData.encryptionMethod || 'hmac-secret'; // Default to hmac-secret
-
-    // Retrieve secret key from WebAuthn device
-    let secretKey: Uint8Array;
-    
-    if (encryptionMethod === 'largeBlob') {
-      secretKey = await retrieveSKFromLargeBlob(
-        new Uint8Array(WebAuthnDIDProvider.base64urlToArrayBuffer(credentialId)),
-        domain
-      );
-    } else {
-      // hmac-secret
-      secretKey = await unwrapSKWithHmacSecret(
-        new Uint8Array(WebAuthnDIDProvider.base64urlToArrayBuffer(credentialId)),
-        encryptedData.wrappedSK!,
-        encryptedData.wrappingIV!,
-        encryptedData.salt!,
-        domain
-      );
-    }
-
-    // Decrypt private key
-    const privateKey = await decryptWithAESGCM(
-      encryptedData.ciphertext,
-      secretKey,
-      encryptedData.iv
+function getKeystoreWorker(): Worker {
+  if (!keystoreWorker) {
+    console.log('[secure-ed25519-did] 🧵 Spawning ed25519-keystore worker');
+    keystoreWorker = new Worker(
+      // Vite/ESM-friendly worker URL
+      new URL('../workers/ed25519-keystore.worker.ts', import.meta.url),
+      { type: 'module' }
     );
 
-    const publicKey = encryptedData.publicKey;
-    const did = encryptedData.did;
+    keystoreWorker.onmessage = (event: MessageEvent<KeystoreResponseMessage>) => {
+      const { id, ok, result, error } = event.data as any;
+      const pending = pendingRequests.get(id);
+      if (!pending) {
+        console.warn('[secure-ed25519-did] ⚠️ Received response for unknown request id', id);
+        return;
+      }
+      pendingRequests.delete(id);
 
-    console.log('✅ Ed25519 DID unlocked:', did);
-
-    const keypair: Ed25519KeyPair = { publicKey, privateKey, did };
-    
-    // Reconstruct WebAuthn credential info
-    const credential: WebAuthnCredentialInfo = {
-      credentialId,
-      rawCredentialId: new Uint8Array(WebAuthnDIDProvider.base64urlToArrayBuffer(credentialId)),
-      publicKey: { algorithm: -7, x: new Uint8Array(0), y: new Uint8Array(0), keyType: 2, curve: 1 },
-      userId: '',
-      displayName: '',
-      did: ''
+      if (ok) {
+        console.log('[secure-ed25519-did] ✅ Worker response', { id, result });
+        pending.resolve(result);
+      } else {
+        console.error('[secure-ed25519-did] ❌ Worker error', { id, error });
+        pending.reject(new Error(error));
+      }
     };
 
-    return new SecureEd25519DIDProvider(credential, keypair, encryptionMethod, domain);
+    keystoreWorker.onerror = (event) => {
+      console.error('[secure-ed25519-did] ❌ Worker error event', event.message);
+    };
   }
-
-  /**
-   * Get the Ed25519 DID
-   */
-  getDID(): string {
-    if (!this.keypair) throw new Error('Keypair not initialized');
-    return this.keypair.did;
-  }
-
-  /**
-   * Get the Ed25519 public key
-   */
-  getPublicKey(): Uint8Array {
-    if (!this.keypair) throw new Error('Keypair not initialized');
-    return this.keypair.publicKey;
-  }
-
-  /**
-   * Get the Ed25519 private key (only available in unlocked session)
-   */
-  getPrivateKey(): Uint8Array {
-    if (!this.sessionUnlocked) throw new Error('Session not unlocked');
-    if (!this.keypair) throw new Error('Keypair not initialized');
-    return this.keypair.privateKey;
-  }
-
-  /**
-   * Export private key in ucanto-compatible format
-   * Returns a multibase-encoded string that can be used with Signer.parse()
-   */
-  exportPrivateKey(): string {
-    if (!this.sessionUnlocked) throw new Error('Session not unlocked');
-    if (!this.keypair) throw new Error('Keypair not initialized');
-
-    // Ucanto expects Ed25519 keys in multibase format
-    // The format is: multibase(multicodec-ed25519-priv + private-key-bytes)
-    // For Ed25519 private keys, multicodec is 0x1300
-    const ED25519_PRIV_MULTICODEC = 0x1300;
-    
-    // Encode multicodec as varint
-    const codecBytes = new Uint8Array(2);
-    codecBytes[0] = ED25519_PRIV_MULTICODEC & 0xff;
-    codecBytes[1] = (ED25519_PRIV_MULTICODEC >> 8) & 0xff;
-    
-    // Combine multicodec + private key
-    const combined = new Uint8Array(codecBytes.length + this.keypair.privateKey.length);
-    combined.set(codecBytes, 0);
-    combined.set(this.keypair.privateKey, codecBytes.length);
-    
-    // Encode as base58btc with 'z' prefix (multibase identifier for base58btc)
-    const encoded = base58btc.encode(combined);
-    return encoded;
-  }
-
-  /**
-   * Create a ucanto Ed25519 Signer from this provider
-   * This can be used directly with ucanto for signing UCANs
-   */
-  async createUcantoSigner(): Promise<any> {
-    if (!this.sessionUnlocked) throw new Error('Session not unlocked');
-    
-    const privateKeyString = this.exportPrivateKey();
-    
-    // Import ucanto's Ed25519 Signer
-    const { Signer } = await import('@storacha/client/principal/ed25519');
-    return Signer.parse(privateKeyString);
-  }
-
-  /**
-   * Lock the session (clear private key from memory)
-   */
-  lock(): void {
-    if (this.keypair) {
-      // Zero out the private key
-      this.keypair.privateKey.fill(0);
-      this.keypair = null;
-    }
-    this.sessionUnlocked = false;
-    console.log('🔒 Session locked');
-  }
-
-  /**
-   * Get credential ID
-   */
-  getCredentialId(): string {
-    return this.webauthnCredential.credentialId;
-  }
+  return keystoreWorker;
 }
+
+async function sendKeystoreRequest<T extends KeystoreRequestMessage['type']>(
+  type: T,
+  payload: Omit<Extract<KeystoreRequestMessage, { type: T }>, 'id' | 'type'>
+): Promise<any> {
+  const worker = getKeystoreWorker();
+  const id = nextRequestId++;
+
+  console.log('[secure-ed25519-did] 📤 Sending worker request', { id, type });
+
+  const message: KeystoreRequestMessage = {
+    id,
+    type,
+    ...(payload as any)
+  };
+
+  const promise = new Promise<any>((resolve, reject) => {
+    pendingRequests.set(id, { resolve, reject });
+  });
+
+  worker.postMessage(message);
+  return promise;
+}
+
+/**
+ * Initialize the worker keystore with a PRF seed.
+ *
+ * The seed should already be the output of some PRF (e.g. derived from
+ * WebAuthn credential material or another KDF). The worker will run an
+ * HKDF-SHA-256 step over this seed to obtain an AES-GCM key.
+ */
+export async function initEd25519KeystoreWithPrfSeed(prfSeed: Uint8Array): Promise<void> {
+  console.log('[secure-ed25519-did] ⚙️ initEd25519KeystoreWithPrfSeed() called', {
+    seedLength: prfSeed.length
+  });
+
+  await sendKeystoreRequest('init', { prfSeed: prfSeed.buffer as ArrayBuffer });
+  console.log('[secure-ed25519-did] ✅ Keystore initialized with PRF seed');
+}
+
+/**
+ * Generate a new Ed25519 keypair inside the worker.
+ * Returns the public key bytes and did:key; the private key never leaves
+ * the worker.
+ */
+export async function generateWorkerEd25519DID(): Promise<{ publicKey: Uint8Array; did: string; archive: any }> {
+  console.log('[secure-ed25519-did] 🔑 generateWorkerEd25519DID() called');
+
+  const result = await sendKeystoreRequest('generateKeypair', {});
+  const publicKey = new Uint8Array(result.publicKey as ArrayBuffer);
+  const did = await createEd25519DID(publicKey);
+  const archive = result.archive;
+
+  console.log('[secure-ed25519-did] ✅ Worker Ed25519 DID generated', { did });
+  return { publicKey, did, archive };
+}
+
+/**
+ * Encrypt arbitrary bytes using the worker's AES-GCM key.
+ */
+export async function keystoreEncrypt(plaintext: Uint8Array): Promise<{ ciphertext: Uint8Array; iv: Uint8Array }> {
+  console.log('[secure-ed25519-did] 🔒 keystoreEncrypt() called', { length: plaintext.length });
+
+  const result = await sendKeystoreRequest('encrypt', { plaintext: plaintext.buffer as ArrayBuffer });
+  const ciphertext = new Uint8Array(result.ciphertext as ArrayBuffer);
+  const iv = new Uint8Array(result.iv as ArrayBuffer);
+
+  console.log('[secure-ed25519-did] ✅ keystoreEncrypt() complete', {
+    ciphertextLength: ciphertext.length,
+    ivLength: iv.length
+  });
+  return { ciphertext, iv };
+}
+
+/**
+ * Decrypt bytes using the worker's AES-GCM key.
+ */
+export async function keystoreDecrypt(ciphertext: Uint8Array, iv: Uint8Array): Promise<Uint8Array> {
+  console.log('[secure-ed25519-did] 🔓 keystoreDecrypt() called', {
+    ciphertextLength: ciphertext.length,
+    ivLength: iv.length
+  });
+
+  const result = await sendKeystoreRequest('decrypt', {
+    ciphertext: ciphertext.buffer as ArrayBuffer,
+    iv: iv.buffer as ArrayBuffer
+  });
+  const plaintext = new Uint8Array(result.plaintext as ArrayBuffer);
+
+  console.log('[secure-ed25519-did] ✅ keystoreDecrypt() complete', { length: plaintext.length });
+  return plaintext;
+}
+
+/**
+ * Sign bytes using the worker-held Ed25519 private key.
+ */
+export async function keystoreSign(data: Uint8Array): Promise<Uint8Array> {
+  console.log('[secure-ed25519-did] ✍️ keystoreSign() called', { length: data.length });
+
+  const result = await sendKeystoreRequest('sign', { data: data.buffer as ArrayBuffer });
+  const signature = new Uint8Array(result.signature as ArrayBuffer);
+
+  console.log('[secure-ed25519-did] ✅ keystoreSign() complete', { length: signature.length });
+  return signature;
+}
+
+/**
+ * Verify a signature using the worker-held Ed25519 public key.
+ */
+export async function keystoreVerify(data: Uint8Array, signature: Uint8Array): Promise<boolean> {
+  console.log('[secure-ed25519-did] ✅ keystoreVerify() called', {
+    dataLength: data.length,
+    sigLength: signature.length
+  });
+
+  const result = await sendKeystoreRequest('verify', {
+    data: data.buffer as ArrayBuffer,
+    signature: signature.buffer as ArrayBuffer
+  });
+
+  const { valid } = result as { valid: boolean };
+  console.log('[secure-ed25519-did] ✅ keystoreVerify() result', { valid });
+  return valid;
+}
+
+/**
+ * Encrypt an Ed25519 archive object using the worker's AES key.
+ * The archive is serialized to JSON (Uint8Array -> array) before encryption.
+ */
+export async function encryptArchive(archive: { id: string; keys: Record<string, Uint8Array> }): Promise<{ ciphertext: Uint8Array; iv: Uint8Array }> {
+  console.log('[secure-ed25519-did] 🔒 encryptArchive() called');
+  
+  // Serialize archive: convert Uint8Array values to arrays for JSON
+  const serialized = {
+    id: archive.id,
+    keys: Object.fromEntries(
+      Object.entries(archive.keys).map(([did, bytes]) => [did, Array.from(bytes)])
+    )
+  };
+  const jsonBytes = new TextEncoder().encode(JSON.stringify(serialized));
+  
+  const result = await keystoreEncrypt(jsonBytes);
+  console.log('[secure-ed25519-did] ✅ encryptArchive() complete');
+  return result;
+}
+
+/**
+ * Decrypt an Ed25519 archive object using the worker's AES key.
+ * The decrypted JSON is deserialized back to the archive format (array -> Uint8Array).
+ */
+export async function decryptArchive(ciphertext: Uint8Array, iv: Uint8Array): Promise<{ id: string; keys: Record<string, Uint8Array> }> {
+  console.log('[secure-ed25519-did] 🔓 decryptArchive() called');
+  
+  const jsonBytes = await keystoreDecrypt(ciphertext, iv);
+  const jsonText = new TextDecoder().decode(jsonBytes);
+  const serialized = JSON.parse(jsonText);
+  
+  // Deserialize: convert arrays back to Uint8Array
+  const archive = {
+    id: serialized.id,
+    keys: Object.fromEntries(
+      Object.entries(serialized.keys).map(([did, arr]) => [did, new Uint8Array(arr as number[])])
+    )
+  };
+  
+  console.log('[secure-ed25519-did] ✅ decryptArchive() complete');
+  return archive;
+}
+

@@ -1,538 +1,147 @@
 # 🔐 UCAN Upload Wall
 
-## A browser-only file upload application powered by WebAuthn DIDs and User-Controlled Authorization Networks (UCANs) on Storacha (hot-storage) and Filecoin (cold storage)
-
-Upload files to decentralized storage without API keys, servers, or centralized authentication. This app demonstrates the future of web applications: **fully decentralized, hardware-secured, and serverless**.
-
----
-
-## 🌟 What Makes This Special?
-
-### 🔑 **Browser-Only WebAuthn DID Authentication**
-
-- **No passwords or usernames** - authenticate with your device's biometric sensors (Face ID, Touch ID, Windows Hello)
-- **Hardware-secured identity** - your private keys are stored in your device's secure hardware
-- **P-256 elliptic curve cryptography** - industry-standard security used by banks and governments
-- **Deterministic DID generation** - same identity across browser sessions with the same authenticator (WebAuthN credential is stored in localstorage)
-
-### 🌉 **UCAN Delegation System**
-
-- **Delegate upload permissions** between different browsers/devices without sharing credentials
-- **Granular capabilities** - specify exactly what actions are allowed (upload, list, etc.)
-- **Cryptographic proof chains** - every action is verifiable through mathematical proofs
-- **Zero-knowledge sharing** - delegate permissions without revealing your private keys
-
-### ☁️ **Decentralization**
-
-- **Filecoin storage** - files are permanently stored on the decentralized web
-- **IPFS addressing** - every file gets a unique, immutable content identifier (CID)
-- **No backend required** - the entire app runs in your browser
-
-Remark: Storacha uses a centralized gateway (hot storage) to decentralized Filecoin storage (cold storage)
-
----
-
-## 🔧 Key Features
-
-### 🛡️ **Biometric Authentication**
-
-```
-Face ID / Touch ID → WebAuthn Credential → P-256 Private Key → DID Identity
-```
-
-- Authenticate using your device's built-in biometric sensors
-- Keys are stored in secure hardware enclaves (TEE/Secure Element)
-- Works across Chrome, Safari, Firefox, and Edge
-
-### 📤 **Decentralized File Upload**
-
-- Drag & drop files directly from your device
-- Files stored on Filecoin via Storacha Network
-- Each file gets a permanent, immutable content identifier (CID)
-- Access files through IPFS gateways worldwide
-
-### 🤝 **Permission Delegation**
-
-- **Browser A** (has Storacha credentials): Creates delegation for Browser B
-- **Browser B** (no Storacha credentials needed): Receives delegation and can upload files
-- Delegation includes specific capabilities (upload, list, time limits)
-- All permissions are cryptographically verifiable
-
-### 📱 **Cross-Device Support**
-
-- Use the same DID identity across multiple browser sessions (but same browser)
-- Delegate permissions to your other devices (resulting in a new DID)
-- Works on desktop, mobile, and tablet browsers
-
----
-
-### **Limitations/Todo's**
-
-- Revocation not implemented
-- Delegation should included a certain time range  
-- BUG: Delegated UCAN cannot list files on Storacha space even if list capability was given
-- Proof-Of-Replication (PoRep) not yet visible  
+A browser-only file upload application powered by **WebAuthn DIDs**, **worker-based Ed25519 keystore**, and **UCAN delegations** on Storacha.
 
 ## 🏗️ Architecture
 
-### **Component Overview**
+### **WebAuthn DID (P-256)**
+- Hardware-secured identity using device biometrics (Face ID, Touch ID, Windows Hello)
+- P-256 elliptic curve cryptography
+- DID format: `did:key:zDna...` (P-256 public key)
+- Used for: Initial authentication, delegation creation
 
+### **Worker-Based Ed25519 Keystore**
+- Ed25519 keypair generated in a dedicated web worker
+- AES-GCM encryption key derived from WebAuthn PRF seed (deterministic)
+- Private key never leaves the worker
+- DID format: `did:key:z6Mk...` (Ed25519 public key)
+- Used for: UCAN signing, Storacha client principal
+
+**Worker Functions:**
+- `init(prfSeed)` - Initialize AES key from WebAuthn PRF seed
+- `generateKeypair()` - Generate Ed25519 keypair and archive
+- `encrypt(plaintext)` - Encrypt data with AES-GCM
+- `decrypt(ciphertext, iv)` - Decrypt data with AES-GCM
+- `sign(data)` - Sign data with Ed25519 private key
+- `verify(data, signature)` - Verify Ed25519 signature
+
+### **Key Flow**
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Browser Frontend                         │
-│                  (React + TypeScript)                       │
-│                                                             │
-│  ┌─────────────────┐  ┌──────────────────────────────────┐ │
-│  │ WebAuthn DID    │  │     UCAN Delegation              │ │
-│  │ Provider        │  │     Service                      │ │
-│  │                 │  │                                  │ │
-│  │ • P-256 Keys    │  │ • Create Delegations             │ │
-│  │ • Biometric     │  │ • Import Proofs                  │ │
-│  │ • Hardware TEE  │  │ • Manage Capabilities            │ │
-│  └─────────────────┘  └──────────────────────────────────┘ │
-│                                                             │
-│  ┌─────────────────────────────────────────────────────────┐ │
-│  │              Storacha SDK Client                        │ │
-│  │         (Browser Integration)                           │ │
-│  └─────────────────────────────────────────────────────────┘ │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-                       │ UCAN Invocation
-                       ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   Storacha Network                          │
-│                                                             │
-│  1. Validate UCAN proof chain                               │
-│  2. Verify cryptographic signatures                         │
-│  3. Check capability permissions                            │
-│  4. Execute authorized actions                              │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-                       │ Store File
-                       ▼
-┌─────────────────────────────────────────────────────────────┐
-│                  Filecoin Network                           │
-│              (Permanent Storage)                            │
-│                                                             │
-│           Returns: CID (Content Identifier)                 │
-└─────────────────────────────────────────────────────────────┘
+WebAuthn Credential (P-256)
+    ↓
+rawCredentialId (PRF seed)
+    ↓
+Worker: HKDF-SHA-256 → AES-GCM key
+    ↓
+Worker: Generate Ed25519 keypair
+    ↓
+Worker: Create Ed25519Signer archive
+    ↓
+Encrypt archive with AES key → localStorage
+    ↓
+Reconstruct Ed25519Signer for Storacha client
 ```
 
-### **UCAN Delegation Flow**
+## 🚀 Features
 
-```mermaid
-sequenceDiagram
-    participant BA as Browser A<br/>(Has Credentials)
-    participant BB as Browser B<br/>(No Credentials)
-    participant S as Storacha Network
-    participant F as Filecoin Storage
+### **1. Generate Ed25519 DID**
+- Automatically generated on first authentication
+- Derived from WebAuthn credential (deterministic per credential)
+- Stored encrypted in localStorage
+- Format: `did:key:z6Mk...`
 
-    Note over BA,BB: Setup Phase
-    BA->>BA: Create WebAuthn DID
-    BA->>BA: Store Storacha Credentials
-    BB->>BB: Create WebAuthn DID
-    
-    Note over BA,BB: Delegation Phase
-    BB->>BA: Share DID (via QR/text)
-    BA->>BA: Create UCAN Delegation
-    BA->>BA: Sign with P-256 WebAuthn Key
-    BA->>BB: Share Delegation Proof
-    BB->>BB: Import & Verify Proof
-
-    Note over BB,F: Upload Phase
-    BB->>S: Upload File (with Delegation)
-    S->>S: Validate UCAN Chain
-    S->>S: Verify P-256 Signatures  
-    S->>F: Store File
-    F->>BB: Return CID
+### **2. Create Delegation (Storacha CLI)**
+```bash
+# On Storacha CLI, create delegation for your Ed25519 DID
+storacha delegation create did:key:z6Mkwa35STKQF1i5eoDYtQ4W1y6y6NbE9RXe3QiJt7aSK6uS --base64
 ```
 
----
+This outputs a base64-encoded UCAN delegation proof.
 
-## 🚀 Getting Started
+### **3. Import Delegation**
+- Paste the delegation proof from Storacha CLI
+- App verifies the delegation is for your current Ed25519 DID
+- Delegation stored in localStorage
+- Capabilities: `upload/*`, `store/*`, `blob/*`, `space/*`, etc.
+
+### **4. Upload File**
+- Drag & drop or click to select
+- File uploaded to Storacha using delegation
+- Returns CID (Content Identifier)
+- Files stored on Filecoin network
+
+### **5. List Files**
+- Lists all uploads in your Storacha space
+- Uses delegation with `upload/list` capability
+- Shows CID, upload date, shards
+
+### **6. Create Delegation** *(Untested)*
+- Create new delegations from your current Ed25519 DID
+- Delegate to another DID with specific capabilities
+- Expiration support
+- **Note:** Needs testing with Storacha network
+
+## 📦 Setup
 
 ### Prerequisites
+- Modern browser with WebAuthn support
+- Device with biometric authentication
+- Storacha account and credentials (for creating delegations)
 
-- Modern browser with WebAuthn support (Chrome, Firefox, Safari, Edge)
-- Device with biometric authentication (recommended) or security key
-- Storacha account and credentials (for initial setup)
-
-### Quick Start
-
-1. **Clone and Install**
-
-   ```bash
-   git clone https://github.com/your-username/ucan-upload-wall.git
-   cd ucan-upload-wall
-   
-   # Install frontend dependencies
-   cd web
-   npm install
-   
-   # Install server dependencies (optional)
-   cd ../server
-   npm install
-   ```
-
-2. **Start Frontend**
-
-   ```bash
-   cd web
-   npm run dev
-   ```
-   Open http://localhost:5173
-
-3. **Setup Authentication**
-   - Click "Authenticate with Biometric"
-   - Use Face ID, Touch ID, or Windows Hello
-   - Your DID will be generated and stored securely
-
-4. **Add Storacha Credentials** (Browser A only)
-
-   ```
-   Private Key: [Your Storacha EdDSA private key]
-   Space Proof: [Your space delegation CAR file]
-   Space DID: [Your space DID identifier]
-   ```
-
-5. **Start Uploading**
-   - Drag & drop files or click to browse
-   - Files are uploaded directly to Filecoin
-   - Get permanent CID links for sharing
-
----
-
-## 🔄 How It Works
-
-### 1. **WebAuthn DID Creation**
-
-```typescript
-// Device biometric authentication
-const credential = await navigator.credentials.create({
-  publicKey: {
-    challenge: crypto.getRandomValues(new Uint8Array(32)),
-    rp: { name: 'UCAN Upload Wall', id: domain },
-    user: { id: userIdBytes, name: userId, displayName },
-    pubKeyCredParams: [{ alg: -7, type: 'public-key' }], // P-256
-    authenticatorSelection: {
-      authenticatorAttachment: 'platform',
-      userVerification: 'required'
-    }
-  }
-});
-
-// Extract P-256 public key and create DID
-const publicKey = extractPublicKey(credential);
-const did = createDID(publicKey); // did:key:zDna...
-```
-
-### 2. **Hardware-Protected Ed25519 Keystore**
-
-For UCAN signing, we use Ed25519 keys (required by ucanto) with WebAuthn hardware protection:
-
-```
-┌─────────────────────────────────────────┐
-│ YOUR APPLICATION                        │
-├─────────────────────────────────────────┤
-│ 1. Generate Ed25519 keypair             │
-│    - publicKey (32 bytes)               │
-│    - privateKey (32 bytes) ⚠️           │
-│ 2. Create Ed25519 DID from publicKey    │
-│    → did:key:z6Mk... (for UCAN)        │
-└────────────────┬────────────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────────────┐
-│ ORBITDB ENCRYPTION (via re-exports)     │
-├─────────────────────────────────────────┤
-│ 3. Generate secretKey (32 bytes) ⚠️     │
-│ 4. Encrypt privateKey with secretKey    │
-│    → ciphertext ✅ (safe)               │
-│                                         │
-│ 5. Protect secretKey with WebAuthn:     │
-│    Option A: hmac-secret (default)      │
-│      → Wrap with HMAC ✅                │
-│    Option B: largeBlob (Chrome 106+)    │
-│      → Store in hardware ✅             │
-│                                         │
-│ 6. Store encrypted data                 │
-│    → localStorage                       │
-└─────────────────────────────────────────┘
-
-      Unlock Flow (requires biometric):
-      
-      1. Load encrypted data from storage
-      2. Retrieve secretKey from WebAuthn 🔐
-      3. Decrypt Ed25519 privateKey
-      4. Sign UCANs with Ed25519 key ✅
-```
-
-**Security chain:**
-- Ed25519 private key → Encrypted with AES-GCM → Safe in localStorage
-- Encryption key → Protected by WebAuthn largeBlob/hmac-secret → Safe in hardware
-- Unlocking → Requires biometric authentication → Only you can decrypt
-
-### 3. **UCAN Delegation Creation**
-
-```typescript
-// Browser A creates delegation for Browser B
-const delegation = await Delegation.delegate({
-  issuer: browserA_Ed25519_DID,  // Your Ed25519 DID (from hardware-protected keystore)
-  audience: browserB_Ed25519_DID, // Target browser's Ed25519 DID
-  capabilities: [
-    { with: spaceDID, can: 'space/blob/add' },
-    { with: spaceDID, can: 'store/add' },
-    { with: spaceDID, can: 'upload/add' }
-  ],
-  expiration: Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60), // 30 days
-  proofs: [storachaSpaceProof] // Chain from your Storacha space
-});
-
-// Sign with Ed25519 key (requires biometric for decryption)
-const signedDelegation = await delegation.sign(browserA_signer);
-```
-
-### 4. **File Upload with Delegation**
-
-```typescript
-// Browser B uploads using received delegation
-const client = await StorachaClient.create({
-  principal: browserB_P256_DID,
-  store: new StoreMemory(),
-  proofs: [importedDelegation] // Proof from Browser A
-});
-
-const file = new File([fileData], 'example.txt');
-const result = await client.upload(file);
-console.log('File CID:', result.cid); // bafybeig...
-```
-
----
-
-## 🔐 OrbitDB WebAuthn Integration
-
-This project uses the [`@le-space/orbitdb-identity-provider-webauthn-did`](https://github.com/le-space/orbitdb-identity-provider-webauthn-did) library for hardware-protected encryption. The integration provides:
-
-### **What We Use From OrbitDB**
-
-✅ **Encryption Utilities** (via re-exports)
-- `generateSecretKey()` - Generate AES-GCM encryption keys
-- `encryptWithAESGCM()` / `decryptWithAESGCM()` - Encrypt/decrypt data
-- `retrieveSKFromLargeBlob()` - WebAuthn largeBlob extension
-- `wrapSKWithHmacSecret()` / `unwrapSKWithHmacSecret()` - WebAuthn hmac-secret extension
-- `storeEncryptedKeystore()` / `loadEncryptedKeystore()` - Keystore storage
-
-✅ **WebAuthn Credential Management**
-- `WebAuthnDIDProvider.createCredential()` - Create WebAuthn credentials
-- `WebAuthnDIDProvider.extractPublicKey()` - Extract P-256 public keys
-- Better error handling and fallback strategies
-
-### **What We Keep Custom**
-
-✅ **UCAN-Specific Logic**
-- Ed25519 keypair generation (required by ucanto)
-- Ed25519 DID creation for UCAN signing
-- ucanto/Storacha integration
-- Session management
-
-### **Code Reduction**
-
-By using OrbitDB's battle-tested implementation:
-- **77% less code** to maintain (1,037 → 241 lines)
-- **Better reliability** - extensively tested WebAuthn handling
-- **Easy updates** - improvements automatically available
-- **No code duplication** - pure imports via re-exports
-
-See [`INTEGRATION_COMPLETE.md`](./INTEGRATION_COMPLETE.md) for full integration details.
-
----
-
-## 💡 Use Cases
-
-### **1. Personal File Backup**
-
-- Backup files from multiple devices using one Storacha account
-- Each device gets its own WebAuthn DID
-- Delegate upload permissions without sharing credentials
-
-### **2. Team File Sharing**
-
-- Team admin sets up Storacha space
-- Delegates permissions to team members' DIDs
-- Members upload files without knowing admin's private keys
-
-### **3. Temporary Access**
-
-- Create time-limited delegations for contractors/guests
-- Automatic expiration prevents unauthorized future access
-- Revokable permissions for enhanced security
-
-### **4. Cross-Platform Development**
-
-- Test applications across different browsers/devices
-- Each environment gets its own DID
-- Seamless file sharing during development
-
----
-
-## 🔒 Security Features
-
-### **Hardware Security**
-
-- Private keys stored in device's Trusted Execution Environment (TEE)
-- Keys cannot be extracted or copied
-- Biometric authentication required for each signature
-
-### **Cryptographic Proofs**
-
-- All permissions are mathematically verifiable
-- UCAN chains provide audit trails
-- No need to trust centralized servers
-
-### **Zero-Knowledge Delegation**
-
-- Share permissions without sharing secrets
-- Each delegation has specific capabilities and expiration
-- Recipient can prove authorization without revealing delegator's keys
-
-### **Filecoin Permanence**
-
-- Files are replicated across multiple storage providers
-- Cryptographic proof of storage
-- Content-addressed via IPFS for global availability
-
----
-
-## 🛠️ Development
-
-### **Project Structure**
-
-```
-ucan-upload-wall/
-├── web/                           # React frontend
-│   ├── src/
-│   │   ├── components/
-│   │   │   ├── Setup.tsx          # WebAuthn & credentials setup
-│   │   │   ├── UploadZone.tsx     # Drag & drop file upload
-│   │   │   ├── DelegationTab.tsx  # Create & manage delegations
-│   │   │   └── FileList.tsx       # Display uploaded files
-│   │   │
-│   │   ├── lib/
-│   │   │   ├── webauthn-did.ts        # WebAuthn DID (OrbitDB re-exports)
-│   │   │   ├── keystore-encryption.ts # Encryption utils (OrbitDB re-exports)
-│   │   │   ├── secure-ed25519-did.ts  # Hardware-protected Ed25519 DID
-│   │   │   └── ucan-delegation.ts     # UCAN delegation service
-│   │   │
-│   │   └── hooks/
-│   │       └── useFileUpload.ts   # Upload logic & state
-│   │
-├── server/                        # Optional Express server
-└── README.md                      # This file
-```
-
-### **Key Technologies**
-- **Frontend**: React, TypeScript, Tailwind CSS, Vite
-- **Authentication**: WebAuthn, P-256 ECDSA, Ed25519
-- **Encryption**: OrbitDB WebAuthn library (hardware-protected keystores)
-- **Storage**: Storacha Client, IPFS, Filecoin
-- **Cryptography**: UCAN, CAR files, Multiformats
-- **UI**: Lucide React icons, responsive design
-
-### **Building**
+### Installation
 ```bash
-# Development
+cd web
+npm install
 npm run dev
-
-# Production build
-npm run build
-
-# Type checking
-npm run typecheck
 ```
 
----
+### First-Time Setup
+1. **Authenticate** - Click "Authenticate with Biometric"
+2. **Get Your DID** - Copy your Ed25519 DID from the UI
+3. **Create Delegation** - Use Storacha CLI:
+   ```bash
+   storacha delegation create <your-did> --base64
+   ```
+4. **Import Delegation** - Paste the delegation proof
+5. **Upload Files** - Start uploading!
 
-## 🌐 Browser Compatibility
+## 🔐 Security
 
-| Browser | WebAuthn | Platform Auth | Status |
-|---------|----------|---------------|--------|
-| Chrome 67+ | ✅ | ✅ | Fully Supported |
-| Firefox 60+ | ✅ | ✅ | Fully Supported |
-| Safari 14+ | ✅ | ✅ | Fully Supported |
-| Edge 18+ | ✅ | ✅ | Fully Supported |
+- **WebAuthn PRF Seed**: Deterministic seed from WebAuthn credential
+- **AES-GCM Encryption**: Archive encrypted with worker-derived AES key
+- **Worker Isolation**: Private keys never exposed to main thread
+- **Deterministic Salt**: Same PRF seed → same AES key → same Ed25519 DID
+- **Encrypted Storage**: Archive stored encrypted in localStorage
 
-**Platform Authenticators:**
-- **iOS**: Face ID, Touch ID
-- **macOS**: Touch ID, Apple Watch
-- **Windows**: Windows Hello (fingerprint, face, PIN)
-- **Android**: Fingerprint, Face Unlock
+## 🛠️ Technical Details
 
----
+### **Worker Keystore**
+- Location: `web/src/workers/ed25519-keystore.worker.ts`
+- Generates Ed25519 keypair using Web Crypto API
+- Creates `@ucanto/principal/ed25519` compatible archive
+- AES key derived deterministically from PRF seed
 
-## 📚 Learn More
+### **Secure Ed25519 DID**
+- Location: `web/src/lib/secure-ed25519-did.ts`
+- Wraps worker communication
+- Provides `encryptArchive()` / `decryptArchive()` helpers
+- Manages DID generation and storage
 
-### **UCAN & Decentralized Identity**
+### **UCAN Delegation Service**
+- Location: `web/src/lib/ucan-delegation.ts`
+- Manages Storacha client initialization
+- Handles delegation import/export
+- Upload/list/delete operations
+
+## 📝 Notes
+
+- **Deterministic DID**: Same WebAuthn credential always produces same Ed25519 DID
+- **Archive Encryption**: Archive encrypted with AES-GCM, decrypted only in worker
+- **Delegation Mismatch**: If DID changes, delegation must be recreated
+- **Worker Persistence**: Worker state lost on page reload; archive restored from localStorage
+
+## 🔗 Resources
+
+- [Storacha Documentation](https://docs.storacha.network/)
 - [UCAN Specification](https://github.com/ucan-wg/spec)
 - [WebAuthn Guide](https://webauthn.guide/)
-- [DID Core Specification](https://www.w3.org/TR/did-core/)
-
-### **Filecoin & IPFS**
-- [Storacha Documentation](https://docs.storacha.network/)
-- [Filecoin Documentation](https://docs.filecoin.io/)
-- [IPFS Documentation](https://docs.ipfs.tech/)
-
-### **Cryptography**
-- [P-256 Elliptic Curve](https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.186-4.pdf)
-- [CAR File Format](https://ipld.io/specs/transport/car/)
-- [Multiformats](https://multiformats.io/)
-
----
-
-## 🤝 Contributing
-
-We welcome contributions! This project demonstrates cutting-edge web technologies:
-
-1. **Fork the repository**
-2. **Create a feature branch** (`git checkout -b feature/amazing-feature`)
-3. **Test thoroughly** (especially cross-browser WebAuthn compatibility)
-4. **Commit your changes** (`git commit -m 'Add amazing feature'`)
-5. **Push to the branch** (`git push origin feature/amazing-feature`)
-6. **Open a Pull Request**
-
-### **Areas for Contribution**
-- Mobile browser optimization
-- Additional authenticator support
-- Enhanced delegation UI
-- Performance improvements
-- Documentation & tutorials
-
----
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
-
-## 🏆 Acknowledgments
-
-- **Storacha Team** for pioneering UCAN-based decentralized storage
-- **UCAN Working Group** for the authorization network specification
-- **WebAuthn Community** for passwordless authentication standards
-- **IPFS & Filecoin** projects for decentralized storage infrastructure
-- **Web3 Storage** for making decentralized storage accessible
-
----
-
-## 🔮 Future Vision
-
-This application represents the future of web development:
-
-- **No servers** - applications run entirely in browsers
-- **No databases** - data is stored on decentralized networks
-- **No passwords** - authentication uses device hardware
-- **No API keys** - permissions are cryptographically delegated
-- **No vendor lock-in** - standards-based protocols ensure interoperability
-
-**Welcome to the decentralized web.** 🌐✨
-

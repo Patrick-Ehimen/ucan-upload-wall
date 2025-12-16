@@ -16,7 +16,6 @@
     "playwright:install": "playwright install chromium"
   },
   "dependencies": {
-    "@le-space/orbitdb-identity-provider-webauthn-did": "file:../../orbitdb-identity-provider-webauthn-did",
     "@storacha/client": "^1.8.21",
     "@ucanto/client": "^9.0.2",
     "@ucanto/core": "^10.4.6",
