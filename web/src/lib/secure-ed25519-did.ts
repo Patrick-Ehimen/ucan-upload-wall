@@ -7,7 +7,7 @@
  * @example
  * // Create new hardware-protected Ed25519 DID
  * const provider = await SecureEd25519DIDProvider.create({
- *   encryptionMethod: 'largeBlob' // or 'hmac-secret'
+ *   encryptionMethod: 'hmac-secret' // Default (or 'largeBlob' for Chrome 106+)
  * });
  * 
  * // Get DID for UCAN audience/issuer
@@ -127,7 +127,7 @@ async function createCredentialWithEncryption(
     userId = `ucan-user-${Date.now()}`,
     displayName = 'UCAN Upload Wall User',
     domain = window.location.hostname,
-    encryptionMethod = 'largeBlob'
+    encryptionMethod = 'hmac-secret' // Default to hmac-secret (wider browser support)
   } = config;
 
   if (!WebAuthnDIDProvider.isSupported()) {
@@ -158,7 +158,7 @@ async function createCredentialWithEncryption(
     }
   };
 
-  // Add encryption extension
+  // Add encryption extension based on method
   if (encryptionMethod === 'largeBlob') {
     credentialOptions.publicKey.extensions = {
       largeBlob: {
@@ -166,8 +166,9 @@ async function createCredentialWithEncryption(
       }
     };
   } else if (encryptionMethod === 'hmac-secret') {
+    // Try modern PRF extension first (WebAuthn Level 3)
     credentialOptions.publicKey.extensions = {
-      hmacCreateSecret: true
+      prf: {} // Modern standard
     };
   }
 
@@ -177,6 +178,27 @@ async function createCredentialWithEncryption(
   }
 
   console.log('✅ WebAuthn credential created');
+  
+  // Check if extension was actually enabled
+  const extensions = (credential as any).getClientExtensionResults();
+  console.log('🔍 Extension results:', extensions);
+  
+  // Verify the extension was enabled by the browser
+  if (encryptionMethod === 'largeBlob' && !extensions.largeBlob) {
+    throw new Error('largeBlob extension not supported - browser ignored extension request');
+  }
+  
+  if (encryptionMethod === 'hmac-secret') {
+    // Check for modern prf or legacy hmacCreateSecret
+    const hasPrf = extensions.prf?.enabled === true;
+    const hasHmac = extensions.hmacCreateSecret === true;
+    
+    if (!hasPrf && !hasHmac) {
+      throw new Error('hmac-secret/PRF extension not supported - browser ignored extension request');
+    }
+    
+    console.log('🔐 Extension enabled:', hasPrf ? 'prf' : 'hmacCreateSecret (legacy)');
+  }
 
   // Extract public key
   const publicKey = await WebAuthnDIDProvider.extractPublicKey(credential as PublicKeyCredential);
@@ -196,6 +218,81 @@ async function createCredentialWithEncryption(
   }
 
   return credentialInfo;
+}
+
+/**
+ * Wrap secret key using PRF or hmac-secret extension
+ * Tries modern PRF first, falls back to legacy hmac-secret
+ */
+async function wrapSKWithPRF(
+  credentialId: Uint8Array,
+  secretKey: Uint8Array,
+  rpId: string
+): Promise<{wrappedSK: Uint8Array, wrappingIV: Uint8Array, salt: Uint8Array}> {
+  const salt = crypto.getRandomValues(new Uint8Array(32));
+  
+  // Try modern PRF extension first
+  try {
+    const assertion = await navigator.credentials.get({
+      publicKey: {
+        challenge: crypto.getRandomValues(new Uint8Array(32)),
+        allowCredentials: [{ id: credentialId, type: 'public-key' }],
+        rpId,
+        userVerification: 'required',
+        extensions: {
+          prf: {
+            eval: {
+              first: salt // Modern PRF API
+            }
+          }
+        }
+      }
+    });
+    
+    const extensions = (assertion as any).getClientExtensionResults();
+    
+    if (extensions.prf?.results?.first) {
+      console.log('🔐 Using modern PRF extension');
+      const prfOutput = new Uint8Array(extensions.prf.results.first);
+      const wrapped = await encryptWithAESGCM(secretKey, prfOutput.slice(0, 32));
+      return {
+        wrappedSK: wrapped.ciphertext,
+        wrappingIV: wrapped.iv,
+        salt
+      };
+    }
+  } catch (prfError) {
+    console.warn('PRF extension failed, trying legacy hmac-secret:', prfError);
+  }
+  
+  // Fallback to legacy hmac-secret
+  const assertion = await navigator.credentials.get({
+    publicKey: {
+      challenge: crypto.getRandomValues(new Uint8Array(32)),
+      allowCredentials: [{ id: credentialId, type: 'public-key' }],
+      rpId,
+      userVerification: 'required',
+      extensions: {
+        hmacGetSecret: { salt1: salt } // Legacy API
+      }
+    }
+  });
+  
+  const extensions = (assertion as any).getClientExtensionResults();
+  
+  if (!extensions.hmacGetSecret?.output1) {
+    throw new Error('Neither PRF nor hmac-secret extensions returned output');
+  }
+  
+  console.log('🔐 Using legacy hmac-secret extension');
+  const hmacOutput = new Uint8Array(extensions.hmacGetSecret.output1);
+  const wrapped = await encryptWithAESGCM(secretKey, hmacOutput.slice(0, 32));
+  
+  return {
+    wrappedSK: wrapped.ciphertext,
+    wrappingIV: wrapped.iv,
+    salt
+  };
 }
 
 /**
@@ -261,16 +358,22 @@ export class SecureEd25519DIDProvider {
    */
   static async create(config: SecureEd25519Config = {}): Promise<SecureEd25519DIDProvider> {
     const {
-      encryptionMethod = 'largeBlob',
+      encryptionMethod = 'hmac-secret', // Default to hmac-secret (wider browser support)
       domain = window.location.hostname
     } = config;
 
     console.log('🔐 Creating hardware-protected Ed25519 DID...');
+    console.log('🔍 Encryption method:', encryptionMethod);
+    console.log('🔍 Config passed:', config);
 
     // Check extension support
     const support = await checkExtensionSupport();
+    console.log('🔍 Extension support:', support);
     if (encryptionMethod === 'largeBlob' && !support.largeBlob) {
       throw new Error('largeBlob extension not supported on this device');
+    }
+    if (encryptionMethod === 'hmac-secret' && !support.hmacSecret) {
+      throw new Error('hmac-secret extension not supported on this device');
     }
 
     // Generate Ed25519 keypair
@@ -298,9 +401,9 @@ export class SecureEd25519DIDProvider {
       encryptionMethod
     };
 
-    // If using hmac-secret, wrap the secret key
+    // If using hmac-secret/PRF, wrap the secret key
     if (encryptionMethod === 'hmac-secret') {
-      const wrapped = await wrapSKWithHmacSecret(
+      const wrapped = await wrapSKWithPRF(
         credential.rawCredentialId,
         secretKey,
         domain
@@ -329,7 +432,7 @@ export class SecureEd25519DIDProvider {
 
     // Load encrypted keystore
     const encryptedData = await loadEncryptedKeystore(credentialId);
-    const encryptionMethod = encryptedData.encryptionMethod || 'largeBlob';
+    const encryptionMethod = encryptedData.encryptionMethod || 'hmac-secret'; // Default to hmac-secret
 
     // Retrieve secret key from WebAuthn device
     let secretKey: Uint8Array;

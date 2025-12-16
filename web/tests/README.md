@@ -1,221 +1,77 @@
-# E2E Tests for UCAN Upload Wall
+# E2E Tests
 
-This directory contains end-to-end tests using Playwright to test multi-browser scenarios (Alice & Bob).
+## Overview
 
-## Test Structure
+This directory contains end-to-end tests for the UCAN Upload Wall application.
 
-Based on the [deContact](https://github.com/NiKrause/deContact) test patterns, these tests create **two parallel browser contexts** to simulate different users (Alice and Bob) interacting with the app.
+## Test Files
 
-### Test Workflow
+### `encrypted-keystore.spec.ts` ✅ **NEW - RECOMMENDED**
+**Focus:** Hardware-protected encrypted keystore functionality
 
-1. **Alice**: Authenticates with Biometric (WebAuthn) and receives a DID
-2. **Bob**: Authenticates with Biometric (WebAuthn) and receives a DID  
-3. **Alice**: Adds Storacha credentials (proof & key)
-4. **Alice**: Creates a delegation to Bob with upload/list capabilities
-5. **Bob**: Imports the delegation from Alice
-6. **Alice**: Uploads a test file to her space
-7. **Bob**: Uploads another test file to the **same space** (using delegation)
-8. **Alice**: Lists files and sees both files (hers + Bob's)
-9. **Bob**: Lists files and sees both files (hers + his)
+Tests the core security features:
+- Creating encrypted Ed25519 DID with biometric
+- Session lock/unlock flow after page refresh
+- Manual session locking via header button
+- Fallback to unencrypted mode
+- Extension support detection
 
-## Setup
+**Run:** `npm run test:e2e -- encrypted-keystore`
 
-### 1. Install Playwright
+**Why these tests:**
+- Focused on the encrypted keystore feature
+- Use virtual WebAuthn authenticator (no real biometric needed)
+- Fast (30-60 seconds total)
+- Test the security flow users will actually use
+- Don't require real Storacha credentials
 
-```bash
-pnpm run playwright:install
-```
+### `alice-bob-*.spec.ts` ⚠️ **LEGACY - NEEDS REWRITE**
 
-This installs Playwright and the Chromium browser.
-
-### 2. Configure Environment Variables
-
-Copy the example env file and fill in your credentials:
-
-```bash
-cp .env.test.example .env
-```
-
-Edit `.env` and add:
-
-```bash
-# Playwright Test Configuration
-PAGE_URL=http://localhost:5173
-
-# Alice's Storacha credentials (required for delegation)
-# Get these from: https://console.web3.storage/
-ALICE_STORACHA_KEY=your-storacha-private-key-here
-ALICE_STORACHA_PROOF=your-storacha-proof-here
-ALICE_STORACHA_SPACE_DID=did:key:your-space-did-here
-
-# Optional: Run tests in headed mode (see the browser)
-HEADLESS=true
-```
-
-> **Note**: You need real Storacha credentials for Alice. Get them from [console.web3.storage](https://console.web3.storage/).
-
-### 3. WebAuthn Virtual Authenticator
-
-These tests use **WebAuthn biometric authentication** with a **virtual authenticator** powered by Chrome DevTools Protocol (CDP).
-
-✅ **The tests now work in both headed AND headless mode!**
-
-The virtual authenticator simulates a hardware security key, allowing WebAuthn to work automatically without manual interaction. This is configured in `tests/helpers/webauthn.ts`.
-
-**How it works:**
-
-- Uses CDP's `WebAuthn.enable` and `WebAuthn.addVirtualAuthenticator`
-- Simulates a CTAP2 authenticator with user verification
-- Automatically handles presence simulation
-- Works in both headless and headed modes
+The Alice/Bob tests are currently skipped/incomplete. They need to be rewritten to:
+- Use the new encrypted keystore
+- Mock Storacha API calls instead of requiring real credentials
+- Be simpler and more maintainable (currently 500-700 lines each)
 
 ## Running Tests
 
-### Run all tests (headless)
-
 ```bash
-pnpm run test:e2e
+# Run new encrypted keystore tests only
+npm run test:e2e -- encrypted-keystore
+
+# Run with browser visible
+HEADLESS=false npm run test:e2e -- encrypted-keystore
+
+# Debug mode
+npm run test:e2e:debug -- encrypted-keystore
+
+# UI mode (interactive)
+npm run test:e2e:ui
 ```
 
-### Run tests with browser visible (headed mode)
+## Test Strategy
 
-```bash
-pnpm run test:e2e:headed
-```
+The new `encrypted-keystore.spec.ts` tests focus on what matters most:
 
-### Run tests in UI mode (interactive)
+1. **UI/UX**: Can users see and use encryption options?
+2. **Creation**: Does encrypted DID creation work?
+3. **Session Management**: Lock/unlock flow
+4. **Fallback**: Unencrypted mode still works
+5. **Security Indicators**: Users can see encryption status
 
-```bash
-pnpm run test:e2e:ui
-```
+## Recommendations
 
-### Debug tests with step-by-step execution
+### ✅ DO:
+- Focus on `encrypted-keystore.spec.ts` for core functionality
+- Test error handling and edge cases
+- Test browser compatibility
 
-```bash
-pnpm run test:e2e:debug
-```
-
-### Run a specific test file
-
-```bash
-npx playwright test alice-bob-delegation.spec.ts
-```
-
-## Key Patterns from deContact
-
-These patterns are borrowed from the [deContact tests](https://github.com/NiKrause/deContact/tree/main/tests):
-
-### 1. Shared Browser Instance
-
-```typescript
-const browser = await chromium.launch({
-  headless: process.env.HEADLESS === 'true',
-});
-```
-
-One browser is launched at the module level, then multiple contexts are created from it.
-
-### 2. Separate Browser Contexts
-
-```typescript
-test.beforeAll(async () => {
-  contextAlice = await browser.newContext();
-  pageAlice = await contextAlice.newPage();
-  
-  contextBob = await browser.newContext();
-  pageBob = await contextBob.newPage();
-});
-```
-
-Each user gets their own isolated context (separate cookies, localStorage, etc.).
-
-### 3. Helper Functions
-
-- `initializePage()`: Sets up a fresh page with cleared storage
-- `authenticateUser()`: Handles WebAuthn biometric authentication
-- `uploadFile()`: Uploads a file via file input or drag-drop
-- `getDelegationProof()`: Extracts delegation proof from the UI
-- `countVisibleFiles()`: Counts files in the file list
-
-### 4. User Data Structure
-
-```typescript
-const users = [
-  {
-    name: 'Alice',
-    storachaKey: process.env.ALICE_STORACHA_KEY,
-    storachaProof: process.env.ALICE_STORACHA_PROOF,
-    did: '', // Filled after authentication
-  },
-  {
-    name: 'Bob',
-    did: '', // Filled after authentication
-  },
-];
-```
-
-## Debugging
-
-### View test report
-
-After tests run, open the HTML report:
-
-```bash
-npx playwright show-report
-```
-
-### Screenshots & Traces
-
-Failed tests automatically capture:
-- Screenshots (`screenshot: 'only-on-failure'`)
-- Traces (`trace: 'on-first-retry'`)
-
-View traces with:
-
-```bash
-npx playwright show-trace playwright-report/trace.zip
-```
-
-## Troubleshooting
-
-### WebAuthn fails in headless mode
-
-Run in headed mode instead:
-
-```bash
-pnpm run test:e2e:headed
-```
-
-Or configure a virtual authenticator (advanced).
-
-### Can't extract DID/delegation proof
-
-The helper functions try multiple strategies to find elements. If they fail:
-
-1. Check the DOM structure in your app
-2. Update the selectors in the helper functions
-3. Add `data-testid` attributes to your components for easier testing
-
-### Tests timeout
-
-Increase timeouts in the test:
-
-```typescript
-test('My test', async () => {
-  test.setTimeout(120000); // 2 minutes
-  // ... test code
-});
-```
+### ❌ DON'T:
+- Try to test full production workflow in E2E (too brittle)
+- Rely on real API credentials in CI/CD
+- Create 500+ line test files
 
 ## Next Steps
 
-- Add more test scenarios (error cases, edge cases)
-- Configure virtual authenticator for headless WebAuthn
-- Add visual regression testing
-- Set up CI/CD integration
-
-## References
-
-- [Playwright Documentation](https://playwright.dev/)
-- [deContact Tests](https://github.com/NiKrause/deContact/tree/main/tests)
-- [WebAuthn Guide](https://webauthn.guide/)
+1. Run `npm run test:e2e -- encrypted-keystore` to validate
+2. Add to CI/CD pipeline
+3. Consider rewriting Alice/Bob tests with mocks

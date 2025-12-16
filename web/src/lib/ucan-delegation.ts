@@ -9,12 +9,13 @@ import * as Client from '@storacha/client';
 import * as Proof from '@storacha/client/proof';
 import { StoreMemory } from '@storacha/client/stores/memory';
 import { WebAuthnDIDProvider, WebAuthnCredentialInfo } from './webauthn-did';
-import { createEd25519DID } from './secure-ed25519-did';
+import { createEd25519DID, SecureEd25519DIDProvider } from './secure-ed25519-did';
 
 // Storage keys for localStorage
 const STORAGE_KEYS = {
   WEBAUTHN_CREDENTIAL: 'webauthn_credential_info',
   ED25519_KEYPAIR: 'ed25519_keypair',
+  ENCRYPTED_KEYSTORE_CREDENTIAL_ID: 'encrypted_keystore_credential_id',
   STORACHA_KEY: 'storacha_key',
   STORACHA_PROOF: 'storacha_proof',
   SPACE_DID: 'space_did',
@@ -48,6 +49,7 @@ export interface DelegationInfo {
 export class UCANDelegationService {
   private webauthnProvider: WebAuthnDIDProvider | null = null;
   private ed25519Keypair: Ed25519KeyPair | null = null;
+  private secureEd25519Provider: SecureEd25519DIDProvider | null = null;
   private storachaClient: Client.Client | null = null;
 
   /**
@@ -188,9 +190,122 @@ export class UCANDelegationService {
   }
 
   /**
-   * Get current DID (Ed25519 or WebAuthn)
+   * Initialize or load hardware-protected Ed25519 DID with encrypted keystore
+   * Requires biometric authentication
+   */
+  async initializeSecureEd25519DID(
+    encryptionMethod: 'largeBlob' | 'hmac-secret' = 'hmac-secret',
+    force = false
+  ): Promise<void> {
+    console.log('🔐 Initializing hardware-protected Ed25519 DID...');
+    
+    // If we already have a provider and not forcing, return it
+    if (this.secureEd25519Provider && !force) {
+      console.log('Using cached secure Ed25519 provider');
+      return;
+    }
+    
+    // Check for existing encrypted keystore credential ID
+    const storedCredentialId = localStorage.getItem(STORAGE_KEYS.ENCRYPTED_KEYSTORE_CREDENTIAL_ID);
+    
+    if (storedCredentialId && !force) {
+      try {
+        console.log('Found encrypted keystore, unlocking with biometric...');
+        // Unlock existing (triggers biometric prompt)
+        this.secureEd25519Provider = await SecureEd25519DIDProvider.unlock(storedCredentialId);
+        console.log('✅ Successfully unlocked Ed25519 DID:', this.secureEd25519Provider.getDID());
+      } catch (error) {
+        console.error('Failed to unlock encrypted keystore:', error);
+        // Clear invalid credential ID
+        localStorage.removeItem(STORAGE_KEYS.ENCRYPTED_KEYSTORE_CREDENTIAL_ID);
+        throw new Error(`Failed to unlock encrypted keystore: ${error}`);
+      }
+    } else {
+      try {
+        console.log('Creating new encrypted keystore with biometric...');
+        // Create new (triggers biometric prompt)
+        this.secureEd25519Provider = await SecureEd25519DIDProvider.create({ 
+          encryptionMethod,
+          userId: `ucan-upload-wall-${Date.now()}`,
+          displayName: 'UCAN Upload Wall User'
+        });
+        
+        // Save credential ID for future unlocks
+        const credentialId = this.secureEd25519Provider.getCredentialId();
+        localStorage.setItem(STORAGE_KEYS.ENCRYPTED_KEYSTORE_CREDENTIAL_ID, credentialId);
+        
+        console.log('✅ Created hardware-protected Ed25519 DID:', this.secureEd25519Provider.getDID());
+      } catch (error) {
+        console.error('Failed to create encrypted keystore:', error);
+        throw new Error(`Failed to create encrypted keystore: ${error}`);
+      }
+    }
+  }
+
+  /**
+   * Unlock existing encrypted keystore (triggers biometric prompt)
+   */
+  async unlockSession(): Promise<void> {
+    const credentialId = localStorage.getItem(STORAGE_KEYS.ENCRYPTED_KEYSTORE_CREDENTIAL_ID);
+    if (!credentialId) {
+      throw new Error('No encrypted keystore found. Please create one first.');
+    }
+    
+    console.log('🔓 Unlocking session with biometric...');
+    try {
+      this.secureEd25519Provider = await SecureEd25519DIDProvider.unlock(credentialId);
+      console.log('✅ Session unlocked:', this.secureEd25519Provider.getDID());
+    } catch (error) {
+      console.error('Failed to unlock session:', error);
+      throw new Error(`Failed to unlock session: ${error}`);
+    }
+  }
+
+  /**
+   * Lock the current session (clears private key from memory)
+   */
+  lockSession(): void {
+    if (this.secureEd25519Provider) {
+      console.log('🔒 Locking session...');
+      this.secureEd25519Provider.lock();
+      this.secureEd25519Provider = null;
+      console.log('✅ Session locked');
+    }
+  }
+
+  /**
+   * Check if using hardware-protected encrypted keystore
+   */
+  isUsingEncryptedKeystore(): boolean {
+    const credentialId = localStorage.getItem(STORAGE_KEYS.ENCRYPTED_KEYSTORE_CREDENTIAL_ID);
+    return credentialId !== null;
+  }
+
+  /**
+   * Check if session is currently locked
+   * Returns true if using encrypted keystore but session is not unlocked
+   */
+  isSessionLocked(): boolean {
+    if (!this.isUsingEncryptedKeystore()) {
+      return false; // Not using encryption, so never locked
+    }
+    // Session is locked if we don't have a provider or can't get DID
+    return this.secureEd25519Provider === null;
+  }
+
+  /**
+   * Get current DID (prioritizes secure provider > unencrypted > WebAuthn)
    */
   getCurrentDID(): string | null {
+    // Prioritize secure provider if available
+    if (this.secureEd25519Provider) {
+      try {
+        return this.secureEd25519Provider.getDID();
+      } catch (error) {
+        console.warn('Failed to get DID from secure provider:', error);
+      }
+    }
+    // Fall back to unencrypted or WebAuthn
     return this.ed25519Keypair?.did || this.webauthnProvider?.did || null;
   }
 
@@ -320,15 +435,29 @@ export class UCANDelegationService {
       const { StoreMemory } = await import('@storacha/client/stores/memory');
       const ed25519 = await import('@ucanto/principal/ed25519');
       
-      const UCANTO_ED25519_KEY = 'ucanto_ed25519_signer';
-      const storedSigner = localStorage.getItem(UCANTO_ED25519_KEY);
-      
+      // Get principal based on which keystore we're using
       let principal;
-      if (storedSigner) {
-        principal = ed25519.Signer.parse(storedSigner);
+      
+      // Prioritize secure provider if using encrypted keystore
+      if (this.secureEd25519Provider) {
+        console.log('Using encrypted keystore DID for deletion...');
+        try {
+          principal = await this.secureEd25519Provider.createUcantoSigner();
+        } catch (error) {
+          console.error('Failed to get key from secure provider:', error);
+          throw new Error('Session may be locked. Please unlock and try again.');
+        }
       } else {
-        principal = await ed25519.Signer.generate();
-        localStorage.setItem(UCANTO_ED25519_KEY, ed25519.format(principal));
+        // Fall back to ucanto Ed25519 signer for backward compatibility
+        const UCANTO_ED25519_KEY = 'ucanto_ed25519_signer';
+        const storedSigner = localStorage.getItem(UCANTO_ED25519_KEY);
+        
+        if (storedSigner) {
+          principal = ed25519.Signer.parse(storedSigner);
+        } else {
+          principal = await ed25519.Signer.generate();
+          localStorage.setItem(UCANTO_ED25519_KEY, ed25519.format(principal));
+        }
       }
       
       const store = new StoreMemory();
@@ -539,16 +668,29 @@ export class UCANDelegationService {
       const { StoreMemory } = await import('@storacha/client/stores/memory');
       const ed25519 = await import('@ucanto/principal/ed25519');
       
-      // Get or create ucanto Ed25519 Signer
-      const UCANTO_ED25519_KEY = 'ucanto_ed25519_signer';
-      const storedSigner = localStorage.getItem(UCANTO_ED25519_KEY);
-      
+      // Get principal based on which keystore we're using
       let principal;
-      if (storedSigner) {
-        principal = ed25519.Signer.parse(storedSigner);
+      
+      // Prioritize secure provider if using encrypted keystore
+      if (this.secureEd25519Provider) {
+        console.log('Using encrypted keystore DID for listing...');
+        try {
+          principal = await this.secureEd25519Provider.createUcantoSigner();
+        } catch (error) {
+          console.error('Failed to get key from secure provider:', error);
+          throw new Error('Session may be locked. Please unlock and try again.');
+        }
       } else {
-        principal = await ed25519.Signer.generate();
-        localStorage.setItem(UCANTO_ED25519_KEY, ed25519.format(principal));
+        // Fall back to ucanto Ed25519 signer for backward compatibility
+        const UCANTO_ED25519_KEY = 'ucanto_ed25519_signer';
+        const storedSigner = localStorage.getItem(UCANTO_ED25519_KEY);
+        
+        if (storedSigner) {
+          principal = ed25519.Signer.parse(storedSigner);
+        } else {
+          principal = await ed25519.Signer.generate();
+          localStorage.setItem(UCANTO_ED25519_KEY, ed25519.format(principal));
+        }
       }
       
       // Create Storacha client with the Ed25519 principal and delegation as proof
@@ -624,34 +766,49 @@ export class UCANDelegationService {
       const { StoreMemory } = await import('@storacha/client/stores/memory');
       const ed25519 = await import('@ucanto/principal/ed25519');
       
-      // Get or create ucanto Ed25519 Signer
+      // Get principal based on which keystore we're using
       let principal;
-      const UCANTO_ED25519_KEY = 'ucanto_ed25519_signer';
-      const storedSigner = localStorage.getItem(UCANTO_ED25519_KEY);
       
-      if (storedSigner) {
-        console.log('Loading existing ucanto Ed25519 signer...');
+      // Prioritize secure provider if using encrypted keystore
+      if (this.secureEd25519Provider) {
+        console.log('Using encrypted keystore DID for delegation operations...');
         try {
-          principal = ed25519.Signer.parse(storedSigner);
-          console.log('✅ Loaded ucanto signer with DID:', principal.did());
+          // Create ucanto signer from the secure provider
+          principal = await this.secureEd25519Provider.createUcantoSigner();
+          console.log('✅ Using secure Ed25519 DID:', principal.did());
         } catch (error) {
-          console.warn('Failed to parse stored signer, generating new one');
-          principal = await ed25519.Signer.generate();
-          localStorage.setItem(UCANTO_ED25519_KEY, ed25519.format(principal));
+          console.error('Failed to get key from secure provider:', error);
+          throw new Error('Session may be locked. Please unlock and try again.');
         }
       } else {
-        console.log('Generating new ucanto Ed25519 signer...');
-        principal = await ed25519.Signer.generate();
-        localStorage.setItem(UCANTO_ED25519_KEY, ed25519.format(principal));
-        console.log('✅ Generated new ucanto signer with DID:', principal.did());
+        // Fall back to ucanto Ed25519 signer for backward compatibility
+        const UCANTO_ED25519_KEY = 'ucanto_ed25519_signer';
+        const storedSigner = localStorage.getItem(UCANTO_ED25519_KEY);
         
-        // Also update our Ed25519KeyPair storage to keep it in sync
-        this.ed25519Keypair = {
-          publicKey: '', // We don't need these anymore since we're using ucanto format
-          privateKey: '',
-          did: principal.did()
-        };
-        localStorage.setItem(STORAGE_KEYS.ED25519_KEYPAIR, JSON.stringify(this.ed25519Keypair));
+        if (storedSigner) {
+          console.log('Loading existing ucanto Ed25519 signer...');
+          try {
+            principal = ed25519.Signer.parse(storedSigner);
+            console.log('✅ Loaded ucanto signer with DID:', principal.did());
+          } catch (error) {
+            console.warn('Failed to parse stored signer, generating new one');
+            principal = await ed25519.Signer.generate();
+            localStorage.setItem(UCANTO_ED25519_KEY, ed25519.format(principal));
+          }
+        } else {
+          console.log('Generating new ucanto Ed25519 signer...');
+          principal = await ed25519.Signer.generate();
+          localStorage.setItem(UCANTO_ED25519_KEY, ed25519.format(principal));
+          console.log('✅ Generated new ucanto signer with DID:', principal.did());
+          
+          // Also update our Ed25519KeyPair storage to keep it in sync
+          this.ed25519Keypair = {
+            publicKey: '', // We don't need these anymore since we're using ucanto format
+            privateKey: '',
+            did: principal.did()
+          };
+          localStorage.setItem(STORAGE_KEYS.ED25519_KEYPAIR, JSON.stringify(this.ed25519Keypair));
+        }
       }
       
       console.log('Using principal DID:', principal.did());

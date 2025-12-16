@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
-import { Key, Shield, Copy, Check, AlertCircle, Smartphone } from 'lucide-react';
+import { Key, Shield, Copy, Check, AlertCircle, Smartphone, Lock } from 'lucide-react';
 import { UCANDelegationService } from '../lib/ucan-delegation';
 import { WebAuthnDIDProvider } from '../lib/webauthn-did';
+import { checkExtensionSupport } from '../lib/keystore-encryption';
 
 interface SetupProps {
   delegationService: UCANDelegationService;
@@ -20,10 +21,29 @@ export function Setup({ delegationService, onSetupComplete, onDidCreated }: Setu
   const [savedCredentials, setSavedCredentials] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [webauthnSupported, setWebauthnSupported] = useState(false);
+  
+  // Encryption options
+  const [useEncryption, setUseEncryption] = useState(true);
+  const [encryptionMethod, setEncryptionMethod] = useState<'largeBlob' | 'hmac-secret'>('hmac-secret');
+  const [extensionSupport, setExtensionSupport] = useState({ largeBlob: false, hmacSecret: false });
+  const [isUsingEncrypted, setIsUsingEncrypted] = useState(false);
 
   useEffect(() => {
     // Check WebAuthn support
     setWebauthnSupported(WebAuthnDIDProvider.isSupported());
+    
+    // Check encryption extension support
+    checkExtensionSupport().then(support => {
+      setExtensionSupport(support);
+      // Auto-select best method (prefer hmac-secret for wider browser support)
+      if (support.hmacSecret) {
+        setEncryptionMethod('hmac-secret');
+      } else if (support.largeBlob) {
+        setEncryptionMethod('largeBlob');
+      } else {
+        setUseEncryption(false); // Disable if no support
+      }
+    });
     
     // Load existing credentials
     const existing = delegationService.getStorachaCredentials();
@@ -35,6 +55,9 @@ export function Setup({ delegationService, onSetupComplete, onDidCreated }: Setu
     // Load existing DID
     const did = delegationService.getCurrentDID();
     setCurrentDID(did);
+    
+    // Check if using encrypted keystore
+    setIsUsingEncrypted(delegationService.isUsingEncryptedKeystore());
   }, [delegationService]);
 
   const handleCredentialChange = (field: keyof typeof credentials, value: string) => {
@@ -58,8 +81,32 @@ export function Setup({ delegationService, onSetupComplete, onDidCreated }: Setu
   const handleCreateDID = async () => {
     setIsCreatingDID(true);
     try {
-      // Create or load Ed25519 DID (no biometric needed, stored in localStorage)
-      await delegationService.initializeEd25519DID(false); 
+      if (useEncryption && webauthnSupported) {
+        try {
+          // Try to create encrypted keystore (triggers biometric)
+          await delegationService.initializeSecureEd25519DID(encryptionMethod, false);
+          setIsUsingEncrypted(true);
+        } catch (encryptionError: any) {
+          // If encryption fails (e.g., Safari doesn't support extensions), fall back to unencrypted
+          console.warn('Hardware encryption failed, falling back to unencrypted:', encryptionError.message);
+          
+          if (confirm(
+            'Hardware-protected encryption is not supported on this browser.\n\n' +
+            'Would you like to create an UNENCRYPTED DID instead?\n' +
+            '(Keys will be stored in browser localStorage without hardware protection)'
+          )) {
+            await delegationService.initializeEd25519DID(false);
+            setIsUsingEncrypted(false);
+          } else {
+            throw new Error('DID creation cancelled');
+          }
+        }
+      } else {
+        // Create unencrypted keystore (localStorage only)
+        await delegationService.initializeEd25519DID(false);
+        setIsUsingEncrypted(false);
+      }
+      
       const did = delegationService.getCurrentDID();
       setCurrentDID(did);
       
@@ -127,15 +174,24 @@ export function Setup({ delegationService, onSetupComplete, onDidCreated }: Setu
         
         <div className="space-y-4">
           <p className="text-gray-600">
-            Generate an Ed25519 DID that will be stored securely in your browser. This DID is used for UCAN delegations.
+            Generate an Ed25519 DID for UCAN delegations. Choose hardware-protected encryption for maximum security.
           </p>
           
           {currentDID ? (
             <div className="bg-green-50 border border-green-200 rounded-lg p-4">
               <div className="flex items-center justify-between">
-                <div className="flex items-center">
-                  <Shield className="h-5 w-5 text-green-500 mr-2" />
-                  <span className="text-green-800 font-medium">DID Created</span>
+                <div className="flex items-center gap-2">
+                  {isUsingEncrypted ? (
+                    <Lock className="h-5 w-5 text-green-500" />
+                  ) : (
+                    <Shield className="h-5 w-5 text-green-500" />
+                  )}
+                  <div>
+                    <span className="text-green-800 font-medium">DID Created</span>
+                    <span className="text-xs text-green-600 ml-2">
+                      {isUsingEncrypted ? '🔐 Hardware-Protected' : '⚠️ Unencrypted'}
+                    </span>
+                  </div>
                 </div>
                 <button
                   onClick={() => copyToClipboard(currentDID, 'did')}
@@ -151,16 +207,96 @@ export function Setup({ delegationService, onSetupComplete, onDidCreated }: Setu
               </div>
             </div>
           ) : (
-            <div className="flex gap-3">
-              <button
-                onClick={handleCreateDID}
-                disabled={isCreatingDID}
-                className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
-              >
-                <Key className="h-4 w-4 mr-2" />
-                {isCreatingDID ? 'Generating...' : 'Generate Ed25519 DID'}
-              </button>
-            </div>
+            <>
+              {/* Encryption Options */}
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 space-y-3">
+                <div className="flex items-start gap-3">
+                  <Lock className="h-5 w-5 text-blue-600 flex-shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <h4 className="font-medium text-gray-900 mb-2">Security Options</h4>
+                    
+                    {/* Encryption toggle */}
+                    <label className="flex items-center gap-2 mb-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={useEncryption}
+                        onChange={(e) => setUseEncryption(e.target.checked)}
+                        disabled={!extensionSupport.largeBlob && !extensionSupport.hmacSecret}
+                        className="rounded"
+                      />
+                      <span className="text-sm text-gray-700 font-medium">
+                        Use hardware-protected encryption (Recommended)
+                      </span>
+                    </label>
+                    
+                    {/* Encryption method selection */}
+                    {useEncryption && (
+                      <div className="ml-6 space-y-2">
+                        <p className="text-xs text-gray-600 mb-2">Encryption method:</p>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="encryptionMethod"
+                            value="largeBlob"
+                            checked={encryptionMethod === 'largeBlob'}
+                            onChange={() => setEncryptionMethod('largeBlob')}
+                            disabled={!extensionSupport.largeBlob}
+                          />
+                          <span className="text-sm text-gray-700">
+                            largeBlob {extensionSupport.largeBlob ? '✅' : '❌ Not supported'}
+                          </span>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="encryptionMethod"
+                            value="hmac-secret"
+                            checked={encryptionMethod === 'hmac-secret'}
+                            onChange={() => setEncryptionMethod('hmac-secret')}
+                            disabled={!extensionSupport.hmacSecret}
+                          />
+                          <span className="text-sm text-gray-700">
+                            hmac-secret {extensionSupport.hmacSecret ? '✅' : '❌ Not supported'}
+                          </span>
+                        </label>
+                      </div>
+                    )}
+                    
+                    {/* Security benefits */}
+                    {useEncryption && (
+                      <div className="mt-3 pt-3 border-t border-blue-200">
+                        <p className="text-xs font-medium text-gray-700 mb-1">🔐 Benefits:</p>
+                        <ul className="text-xs text-gray-600 space-y-1">
+                          <li>• Private key encrypted with AES-GCM 256-bit</li>
+                          <li>• Encryption key stored in hardware authenticator</li>
+                          <li>• Protected from XSS and malicious extensions</li>
+                          <li>• Requires biometric to unlock each session</li>
+                        </ul>
+                      </div>
+                    )}
+                    
+                    {!useEncryption && (
+                      <div className="mt-2 p-2 bg-yellow-50 border border-yellow-200 rounded">
+                        <p className="text-xs text-yellow-800">
+                          ⚠️ Unencrypted mode: Private key will be stored in localStorage without encryption.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+              
+              <div className="flex gap-3">
+                <button
+                  onClick={handleCreateDID}
+                  disabled={isCreatingDID || !webauthnSupported}
+                  className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
+                >
+                  {useEncryption ? <Lock className="h-4 w-4 mr-2" /> : <Key className="h-4 w-4 mr-2" />}
+                  {isCreatingDID ? 'Generating...' : useEncryption ? 'Create Secure DID' : 'Create DID'}
+                </button>
+              </div>
+            </>
           )}
         </div>
       </div>

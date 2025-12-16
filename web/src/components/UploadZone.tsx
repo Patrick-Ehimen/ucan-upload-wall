@@ -1,7 +1,8 @@
 import { useCallback, useState, useEffect } from 'react';
-import { Upload, FileText, X, Shield, Smartphone, Copy, Check, AlertCircle } from 'lucide-react';
+import { Upload, FileText, X, Shield, Smartphone, Copy, Check, AlertCircle, Lock } from 'lucide-react';
 import { UCANDelegationService } from '../lib/ucan-delegation';
 import { WebAuthnDIDProvider } from '../lib/webauthn-did';
+import { checkExtensionSupport } from '../lib/keystore-encryption';
 
 interface UploadZoneProps {
   onFileSelect: (file: File) => void;
@@ -18,10 +19,23 @@ export function UploadZone({ onFileSelect, isUploading, delegationService, onDid
   const [isCreatingDID, setIsCreatingDID] = useState(false);
   const [webauthnSupported, setWebauthnSupported] = useState(false);
   const [copiedDID, setCopiedDID] = useState(false);
+  const [encryptionSupported, setEncryptionSupported] = useState(false);
+  const [encryptionMethod, setEncryptionMethod] = useState<'largeBlob' | 'hmac-secret'>('hmac-secret');
 
   useEffect(() => {
     // Check WebAuthn support
     setWebauthnSupported(WebAuthnDIDProvider.isSupported());
+    
+    // Check encryption extension support and pick best method
+    checkExtensionSupport().then(support => {
+      setEncryptionSupported(support.largeBlob || support.hmacSecret);
+      // Prefer hmac-secret for wider browser support
+      if (support.hmacSecret) {
+        setEncryptionMethod('hmac-secret');
+      } else if (support.largeBlob) {
+        setEncryptionMethod('largeBlob');
+      }
+    });
     
     // Load existing DID
     const did = delegationService.getCurrentDID();
@@ -31,7 +45,19 @@ export function UploadZone({ onFileSelect, isUploading, delegationService, onDid
   const handleCreateDID = async () => {
     setIsCreatingDID(true);
     try {
-      await delegationService.initializeEd25519DID(false); 
+      // Use encrypted keystore if supported, fallback to unencrypted
+      if (encryptionSupported) {
+        try {
+          await delegationService.initializeSecureEd25519DID(encryptionMethod, false);
+        } catch (encryptionError: any) {
+          // Safari doesn't support encryption extensions - fall back to unencrypted
+          console.warn('Hardware encryption failed, using unencrypted:', encryptionError.message);
+          await delegationService.initializeEd25519DID(false);
+        }
+      } else {
+        await delegationService.initializeEd25519DID(false);
+      }
+      
       const did = delegationService.getCurrentDID();
       setCurrentDID(did);
       
@@ -149,7 +175,9 @@ export function UploadZone({ onFileSelect, isUploading, delegationService, onDid
           
           <div className="space-y-4">
             <p className="text-gray-600">
-              Generate an Ed25519 DID that will be stored securely in your browser.
+              {encryptionSupported 
+                ? '🔐 Generate a hardware-protected Ed25519 DID with biometric authentication.'
+                : '⚠️ Generate an Ed25519 DID (hardware encryption not supported on this device).'}
             </p>
             
             <button
@@ -157,8 +185,8 @@ export function UploadZone({ onFileSelect, isUploading, delegationService, onDid
               disabled={isCreatingDID}
               className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
             >
-              <Shield className="h-4 w-4 mr-2" />
-              {isCreatingDID ? 'Generating...' : 'Generate Ed25519 DID'}
+              {encryptionSupported ? <Lock className="h-4 w-4 mr-2" /> : <Shield className="h-4 w-4 mr-2" />}
+              {isCreatingDID ? 'Generating...' : encryptionSupported ? '🔐 Create Secure DID' : 'Create DID'}
             </button>
           </div>
         </div>

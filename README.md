@@ -226,13 +226,59 @@ const publicKey = extractPublicKey(credential);
 const did = createDID(publicKey); // did:key:zDna...
 ```
 
-### 2. **UCAN Delegation Creation**
+### 2. **Hardware-Protected Ed25519 Keystore**
+
+For UCAN signing, we use Ed25519 keys (required by ucanto) with WebAuthn hardware protection:
+
+```
+┌─────────────────────────────────────────┐
+│ YOUR APPLICATION                        │
+├─────────────────────────────────────────┤
+│ 1. Generate Ed25519 keypair             │
+│    - publicKey (32 bytes)               │
+│    - privateKey (32 bytes) ⚠️           │
+│ 2. Create Ed25519 DID from publicKey    │
+│    → did:key:z6Mk... (for UCAN)        │
+└────────────────┬────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────┐
+│ ORBITDB ENCRYPTION (via re-exports)     │
+├─────────────────────────────────────────┤
+│ 3. Generate secretKey (32 bytes) ⚠️     │
+│ 4. Encrypt privateKey with secretKey    │
+│    → ciphertext ✅ (safe)               │
+│                                         │
+│ 5. Protect secretKey with WebAuthn:     │
+│    Option A: hmac-secret (default)      │
+│      → Wrap with HMAC ✅                │
+│    Option B: largeBlob (Chrome 106+)    │
+│      → Store in hardware ✅             │
+│                                         │
+│ 6. Store encrypted data                 │
+│    → localStorage                       │
+└─────────────────────────────────────────┘
+
+      Unlock Flow (requires biometric):
+      
+      1. Load encrypted data from storage
+      2. Retrieve secretKey from WebAuthn 🔐
+      3. Decrypt Ed25519 privateKey
+      4. Sign UCANs with Ed25519 key ✅
+```
+
+**Security chain:**
+- Ed25519 private key → Encrypted with AES-GCM → Safe in localStorage
+- Encryption key → Protected by WebAuthn largeBlob/hmac-secret → Safe in hardware
+- Unlocking → Requires biometric authentication → Only you can decrypt
+
+### 3. **UCAN Delegation Creation**
 
 ```typescript
 // Browser A creates delegation for Browser B
 const delegation = await Delegation.delegate({
-  issuer: browserA_P256_DID,     // Your WebAuthn DID
-  audience: browserB_P256_DID,   // Target browser's DID
+  issuer: browserA_Ed25519_DID,  // Your Ed25519 DID (from hardware-protected keystore)
+  audience: browserB_Ed25519_DID, // Target browser's Ed25519 DID
   capabilities: [
     { with: spaceDID, can: 'space/blob/add' },
     { with: spaceDID, can: 'store/add' },
@@ -242,11 +288,11 @@ const delegation = await Delegation.delegate({
   proofs: [storachaSpaceProof] // Chain from your Storacha space
 });
 
-// Sign with WebAuthn P-256 key
+// Sign with Ed25519 key (requires biometric for decryption)
 const signedDelegation = await delegation.sign(browserA_signer);
 ```
 
-### 3. **File Upload with Delegation**
+### 4. **File Upload with Delegation**
 
 ```typescript
 // Browser B uploads using received delegation
@@ -260,6 +306,44 @@ const file = new File([fileData], 'example.txt');
 const result = await client.upload(file);
 console.log('File CID:', result.cid); // bafybeig...
 ```
+
+---
+
+## 🔐 OrbitDB WebAuthn Integration
+
+This project uses the [`@le-space/orbitdb-identity-provider-webauthn-did`](https://github.com/le-space/orbitdb-identity-provider-webauthn-did) library for hardware-protected encryption. The integration provides:
+
+### **What We Use From OrbitDB**
+
+✅ **Encryption Utilities** (via re-exports)
+- `generateSecretKey()` - Generate AES-GCM encryption keys
+- `encryptWithAESGCM()` / `decryptWithAESGCM()` - Encrypt/decrypt data
+- `retrieveSKFromLargeBlob()` - WebAuthn largeBlob extension
+- `wrapSKWithHmacSecret()` / `unwrapSKWithHmacSecret()` - WebAuthn hmac-secret extension
+- `storeEncryptedKeystore()` / `loadEncryptedKeystore()` - Keystore storage
+
+✅ **WebAuthn Credential Management**
+- `WebAuthnDIDProvider.createCredential()` - Create WebAuthn credentials
+- `WebAuthnDIDProvider.extractPublicKey()` - Extract P-256 public keys
+- Better error handling and fallback strategies
+
+### **What We Keep Custom**
+
+✅ **UCAN-Specific Logic**
+- Ed25519 keypair generation (required by ucanto)
+- Ed25519 DID creation for UCAN signing
+- ucanto/Storacha integration
+- Session management
+
+### **Code Reduction**
+
+By using OrbitDB's battle-tested implementation:
+- **77% less code** to maintain (1,037 → 241 lines)
+- **Better reliability** - extensively tested WebAuthn handling
+- **Easy updates** - improvements automatically available
+- **No code duplication** - pure imports via re-exports
+
+See [`INTEGRATION_COMPLETE.md`](./INTEGRATION_COMPLETE.md) for full integration details.
 
 ---
 
@@ -334,8 +418,10 @@ ucan-upload-wall/
 │   │   │   └── FileList.tsx       # Display uploaded files
 │   │   │
 │   │   ├── lib/
-│   │   │   ├── webauthn-did.ts    # WebAuthn DID provider
-│   │   │   └── ucan-delegation.ts # UCAN delegation service
+│   │   │   ├── webauthn-did.ts        # WebAuthn DID (OrbitDB re-exports)
+│   │   │   ├── keystore-encryption.ts # Encryption utils (OrbitDB re-exports)
+│   │   │   ├── secure-ed25519-did.ts  # Hardware-protected Ed25519 DID
+│   │   │   └── ucan-delegation.ts     # UCAN delegation service
 │   │   │
 │   │   └── hooks/
 │   │       └── useFileUpload.ts   # Upload logic & state
@@ -346,7 +432,8 @@ ucan-upload-wall/
 
 ### **Key Technologies**
 - **Frontend**: React, TypeScript, Tailwind CSS, Vite
-- **Authentication**: WebAuthn, P-256 ECDSA
+- **Authentication**: WebAuthn, P-256 ECDSA, Ed25519
+- **Encryption**: OrbitDB WebAuthn library (hardware-protected keystores)
 - **Storage**: Storacha Client, IPFS, Filecoin
 - **Cryptography**: UCAN, CAR files, Multiformats
 - **UI**: Lucide React icons, responsive design
