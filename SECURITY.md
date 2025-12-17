@@ -220,6 +220,16 @@ True hardware-backed P-256 UCAN delegation would require:
 
 While the current architecture is insecure, the following measures reduce (but do not eliminate) risk:
 
+### 0. Use in Restricted Environments
+
+**Most Important**: To significantly reduce the attack surface:
+
+- ✅ **Use in browsers WITHOUT any extensions** (e.g., Chrome/Firefox with zero extensions installed)
+- ✅ **Use on mobile phones** where browser extensions are typically not available and the attack surface is much smaller
+- ❌ **Avoid using with browser extensions installed** - they can inject code, intercept messages, and access localStorage
+
+This single measure eliminates many of the code injection attack vectors described in this document.
+
 ### 1. Content Security Policy (CSP)
 ```html
 <meta http-equiv="Content-Security-Policy" 
@@ -270,7 +280,7 @@ Before using this application, ensure:
 
 ---
 
-## 🤝 Contributing to P-256 Integration
+## 🤝 Contributing
 
 Want to help make this architecture secure? Here's how:
 
@@ -278,6 +288,7 @@ Want to help make this architecture secure? Here's how:
 2. **Review Code**: Help audit the P-256 implementation
 3. **Integration Work**: Assist with integrating P-256 into [storacha/upload-service](https://github.com/storacha/upload-service)
 4. **Documentation**: Improve security documentation and best practices
+5. **Roadmap**: See [PLANNING.md](./PLANNING.md) for future features and how to contribute
 
 ---
 
@@ -289,6 +300,14 @@ If you discover a security vulnerability, please:
 2. Email security concerns to the maintainer
 3. Provide detailed reproduction steps
 4. Allow time for patches before public disclosure
+
+---
+
+## 🚀 Future Plans
+
+For detailed roadmap and future planning, including P-256 integration and multi-device DKG architecture, see:
+
+**[PLANNING.md](./PLANNING.md) - Future Planning & Roadmap**
 
 ---
 

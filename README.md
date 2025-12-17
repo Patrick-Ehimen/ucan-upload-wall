@@ -10,6 +10,10 @@ A browser-only file upload application powered by **WebAuthn DIDs**, **worker-ba
 
 ⚠️ **Demo is for testing only** - do not use with valuable data (see security warnings above)
 
+**To mitigate the above stated security risks**, please use the browser app only in:
+- Browsers **without any installed browser extensions** (e.g., Chrome extensions), or
+- **Mobile phones** where the attack surface is much smaller
+
 ## 🏗️ Architecture
 
 ### **WebAuthn DID (P-256)**
@@ -143,6 +147,17 @@ This needs to be integrated into **[storacha/upload-service](https://github.com/
 
 See **[SECURITY.md](./SECURITY.md)** for complete details.
 
+### 🚀 Future: Multi-Device DKG
+
+A **planned third version** will use **Distributed Key Generation (DKG)** across multiple devices (browser + mobile), where:
+- No single device holds the complete private key
+- Signing requires confirmation from multiple devices (e.g., scan QR code on mobile)
+- Devices communicate via js-libp2p
+- Hardware-backed security on all devices
+- Enables secure credential storage on Storacha
+
+See **[PLANNING.md](./PLANNING.md)** for the complete roadmap and technical details.
+
 ## 🛠️ Technical Details
 
 ### **Worker Keystore**
@@ -175,6 +190,12 @@ See **[SECURITY.md](./SECURITY.md)** for complete details.
 - [Storacha Documentation](https://docs.storacha.network/)
 - [UCAN Specification](https://github.com/ucan-wg/spec)
 - [WebAuthn Guide](https://webauthn.guide/)
+
+## 📚 Project Documentation
+
+- **[SECURITY.md](./SECURITY.md)** - Security warnings, attack vectors, and limitations
+- **[PLANNING.md](./PLANNING.md)** - Future roadmap and planned features
+- **[LICENSE](./LICENSE)** - MIT License
 
 ## 📄 License
 
