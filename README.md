@@ -7,6 +7,7 @@ A browser-only file upload application powered by **WebAuthn DIDs**, **worker-ba
 ## 📑 Table of Contents
 
 - [🌐 Live Demo](#-live-demo)
+- [🎥 Demo Video](#-demo-video)
 - [🏗️ Architecture](#️-architecture)
 - [🚀 Features](#-features)
 - [🔄 How It Works](#-how-it-works)
@@ -27,6 +28,12 @@ A browser-only file upload application powered by **WebAuthn DIDs**, **worker-ba
 **To mitigate the above stated security risks**, please use the browser app only in:
 - Browsers **without any installed browser extensions** (e.g., Chrome extensions), or
 - **Mobile phones** where the attack surface is much smaller
+
+## 🎥 Demo Video
+
+[![UCAN Upload Wall Demo](https://img.youtube.com/vi/3ZqkgYMS1MM/maxresdefault.jpg)](https://www.youtube.com/watch?v=3ZqkgYMS1MM)
+
+*Click the image above to watch the demo video on YouTube*
 
 ## 🏗️ Architecture
 
