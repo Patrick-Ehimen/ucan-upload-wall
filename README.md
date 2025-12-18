@@ -120,6 +120,24 @@ This outputs a base64-encoded UCAN delegation proof.
 - Expiration support (1 hour to 10 years, or never)
 - Works with both Storacha credentials and received delegations
 
+### **7. Revoke Delegations** 🆕
+- **Revoke delegations you created** to immediately block access
+- Integrated with Storacha's revocation registry
+- **Real-time validation** - all operations check revocation status before executing
+- **Visual indicators** - Clear UI badges showing Active/Revoked/Expired status
+- **Automatic caching** - Revocation checks are cached for 5 minutes to minimize API calls
+- **Security first** - Essential for handling lost devices, mistakes, or security incidents
+- **Permanent action** - Revocations cannot be undone (by design)
+- Works with both issuer and audience of delegations
+
+**How it works:**
+1. Click "Revoke" button on any delegation you created
+2. Confirm the action (cannot be undone)
+3. Revocation request sent to Storacha service
+4. Delegation marked as revoked in local storage
+5. Recipient can no longer use the delegation for uploads
+6. Revocation status synced via `https://up.storacha.network/revocations/`
+
 ## 🔄 How It Works
 
 ### Serverless Architecture

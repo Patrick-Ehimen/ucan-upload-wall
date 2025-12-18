@@ -1,13 +1,14 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Share, Copy, Check, Plus, Download, Upload, Shield, Trash2, ArrowRight, User, Clock, Key } from 'lucide-react';
+import { Share, Copy, Check, Plus, Download, Upload, Shield, Trash2, ArrowRight, User, Clock, Key, XCircle, Ban } from 'lucide-react';
 import { UCANDelegationService, DelegationInfo } from '../lib/ucan-delegation';
 
 interface DelegationManagerProps {
   delegationService: UCANDelegationService;
   onDidCreated?: () => void;
+  onDelegationImported?: () => void;
 }
 
-export function DelegationManager({ delegationService }: DelegationManagerProps) {
+export function DelegationManager({ delegationService, onDelegationImported }: DelegationManagerProps) {
   const [currentDID, setCurrentDID] = useState<string | null>(null);
   const [createdDelegations, setCreatedDelegations] = useState<DelegationInfo[]>([]);
   const [receivedDelegations, setReceivedDelegations] = useState<DelegationInfo[]>([]);
@@ -31,6 +32,7 @@ export function DelegationManager({ delegationService }: DelegationManagerProps)
   });
   const [savedCredentials, setSavedCredentials] = useState(false);
   const [showCredentialsForm, setShowCredentialsForm] = useState(false);
+  const [revokingDelegation, setRevokingDelegation] = useState<string | null>(null);
 
   // Available capabilities with descriptions
   const availableCapabilities = [
@@ -139,9 +141,13 @@ export function DelegationManager({ delegationService }: DelegationManagerProps)
       setImportProof('');
       setDelegationName(''); // Clear the name field
       
-      // Show format in success message
-      const formatInfo = latestDelegation?.format ? `\n\nFormat detected: ${latestDelegation.format}` : '';
-      alert(`Delegation imported successfully!${formatInfo}`);
+      // UX improvement: After successful import, automatically:
+      // 1. Reload files in background (to show any existing uploads)
+      // 2. Switch to upload view (user likely wants to upload next)
+      // 3. Show success notification
+      if (onDelegationImported) {
+        onDelegationImported();
+      }
     } catch (error) {
       alert(`Failed to import delegation: ${error}`);
     }
@@ -180,6 +186,30 @@ export function DelegationManager({ delegationService }: DelegationManagerProps)
       delegationService.clearReceivedDelegations();
       loadData();
       alert('All received delegations have been deleted.');
+    }
+  };
+
+  const handleRevokeDelegation = async (delegationCID: string) => {
+    if (!confirm('Are you sure you want to revoke this delegation?\n\nThis action CANNOT be undone. The recipient will immediately lose access.')) {
+      return;
+    }
+    
+    setRevokingDelegation(delegationCID);
+    try {
+      console.log('🔄 Revoking delegation:', delegationCID);
+      const result = await delegationService.revokeDelegation(delegationCID);
+      
+      if (result.success) {
+        alert('✅ Delegation revoked successfully!\n\nThe recipient can no longer use this delegation for uploads.');
+        loadData(); // Refresh the delegation list
+      } else {
+        alert(`❌ Failed to revoke delegation:\n\n${result.error}`);
+      }
+    } catch (error) {
+      console.error('Revocation error:', error);
+      alert(`❌ Error revoking delegation:\n\n${error}`);
+    } finally {
+      setRevokingDelegation(null);
     }
   };
 
@@ -646,7 +676,13 @@ export function DelegationManager({ delegationService }: DelegationManagerProps)
         ) : (
           <div className="space-y-4">
             {createdDelegations.map((delegation) => (
-              <div key={delegation.id} className="border border-gray-200 rounded-lg p-4 bg-gradient-to-r from-green-50 to-emerald-50">
+              <div key={delegation.id} className={`border rounded-lg p-4 ${
+                delegation.revoked 
+                  ? 'border-red-300 bg-gradient-to-r from-red-50 to-orange-50 opacity-75' 
+                  : delegation.expiresAt && new Date(delegation.expiresAt) < new Date()
+                  ? 'border-orange-300 bg-gradient-to-r from-orange-50 to-yellow-50 opacity-75'
+                  : 'border-gray-200 bg-gradient-to-r from-green-50 to-emerald-50'
+              }`}>
                 <div className="space-y-4">
                   {/* Header */}
                   <div className="flex items-start justify-between">
@@ -654,8 +690,23 @@ export function DelegationManager({ delegationService }: DelegationManagerProps)
                       <Share className="h-5 w-5 text-green-600 mr-2" />
                       <span className="font-semibold text-gray-900">Delegation Created</span>
                     </div>
-                    <div className="bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded font-medium">
-                      Shared
+                    <div className="flex items-center gap-2">
+                      {delegation.revoked ? (
+                        <div className="bg-red-100 text-red-800 text-xs px-2 py-1 rounded font-medium flex items-center">
+                          <Ban className="h-3 w-3 mr-1" />
+                          Revoked
+                        </div>
+                      ) : delegation.expiresAt && new Date(delegation.expiresAt) < new Date() ? (
+                        <div className="bg-orange-100 text-orange-800 text-xs px-2 py-1 rounded font-medium flex items-center">
+                          <Clock className="h-3 w-3 mr-1" />
+                          Expired
+                        </div>
+                      ) : (
+                        <div className="bg-green-100 text-green-800 text-xs px-2 py-1 rounded font-medium flex items-center">
+                          <Check className="h-3 w-3 mr-1" />
+                          Active
+                        </div>
+                      )}
                     </div>
                   </div>
                   
@@ -748,21 +799,58 @@ export function DelegationManager({ delegationService }: DelegationManagerProps)
                     </div>
                   </div>
                   
+                  {/* Revocation Info */}
+                  {delegation.revoked && delegation.revokedAt && (
+                    <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                      <div className="flex items-center text-red-800 text-sm font-medium mb-1">
+                        <Ban className="h-4 w-4 mr-2" />
+                        This delegation has been revoked
+                      </div>
+                      <div className="text-xs text-red-700">
+                        <div>Revoked: {new Date(delegation.revokedAt).toLocaleString()}</div>
+                        {delegation.revokedBy && (
+                          <div className="mt-1">
+                            By: <code className="bg-red-100 px-1 py-0.5 rounded">{delegation.revokedBy.slice(0, 20)}...</code>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  
                   {/* Actions */}
                   <div className="flex items-center justify-between pt-2 border-t border-green-200">
                     <div className="text-xs text-gray-500">
-                      Share this delegation proof with the recipient to grant them upload permissions
-                    </div>
-                    <button
-                      onClick={() => copyToClipboard(delegation.proof || btoa(JSON.stringify(delegation)), `created-${delegation.id}`)}
-                      className="flex items-center text-green-600 hover:text-green-800 text-sm"
-                      title="Copy delegation proof to share"
-                    >
-                      {copiedField === `created-${delegation.id}` ? 
-                        <><Check className="h-4 w-4 mr-1" /> Copied!</> : 
-                        <><Copy className="h-4 w-4 mr-1" /> Copy to Share</>
+                      {delegation.revoked 
+                        ? 'This delegation is no longer valid. The recipient cannot use it.' 
+                        : 'Share this delegation proof with the recipient to grant them upload permissions'
                       }
-                    </button>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {!delegation.revoked && (
+                        <button
+                          onClick={() => handleRevokeDelegation(delegation.id)}
+                          disabled={revokingDelegation === delegation.id}
+                          className="flex items-center text-red-600 hover:text-red-800 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                          title="Revoke this delegation"
+                        >
+                          {revokingDelegation === delegation.id ? (
+                            <>⏳ Revoking...</>
+                          ) : (
+                            <><XCircle className="h-4 w-4 mr-1" /> Revoke</>
+                          )}
+                        </button>
+                      )}
+                      <button
+                        onClick={() => copyToClipboard(delegation.proof || btoa(JSON.stringify(delegation)), `created-${delegation.id}`)}
+                        className="flex items-center text-green-600 hover:text-green-800 text-sm"
+                        title="Copy delegation proof to share"
+                      >
+                        {copiedField === `created-${delegation.id}` ? 
+                          <><Check className="h-4 w-4 mr-1" /> Copied!</> : 
+                          <><Copy className="h-4 w-4 mr-1" /> Copy</>
+                        }
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>

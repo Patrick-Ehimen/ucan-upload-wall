@@ -148,6 +148,32 @@ function App() {
     setDidCreated(hasDID);
   };
   
+  const handleDelegationImported = useCallback(async () => {
+    // After importing a delegation, reload files and switch to upload view
+    console.log('🎉 Delegation imported! Reloading files and switching to upload view...');
+    
+    // Reload files in background
+    setIsLoadingFiles(true);
+    try {
+      const files = await delegationService.listUploads();
+      setStorachaFiles(files);
+      console.log(`✅ Loaded ${files.length} files after delegation import`);
+    } catch (error) {
+      console.error('Failed to reload files after delegation import:', error);
+    } finally {
+      setIsLoadingFiles(false);
+    }
+    
+    // Switch to upload view
+    setCurrentView('upload');
+    
+    // Show success notification
+    setAlert({
+      type: 'success',
+      message: '✅ Delegation imported! You can now upload files.',
+    });
+  }, [delegationService]);
+  
   const handleReloadFiles = useCallback(async () => {
     setIsLoadingFiles(true);
     try {
@@ -209,6 +235,7 @@ function App() {
           <DelegationManager 
             delegationService={delegationService}
             onDidCreated={handleDidCreated}
+            onDelegationImported={handleDelegationImported}
           />
         );
       

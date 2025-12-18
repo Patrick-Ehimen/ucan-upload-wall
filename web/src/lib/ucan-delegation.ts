@@ -28,7 +28,8 @@ const STORAGE_KEYS = {
   STORACHA_PROOF: 'storacha_proof',
   SPACE_DID: 'space_did',
   CREATED_DELEGATIONS: 'created_delegations',
-  RECEIVED_DELEGATIONS: 'received_delegations'
+  RECEIVED_DELEGATIONS: 'received_delegations',
+  REVOCATION_CACHE: 'revocation_cache'  // Cache for revocation status checks
 } as const;
 
 interface Ed25519KeyPair {
@@ -53,6 +54,9 @@ export interface DelegationInfo {
   createdAt: string;
   expiresAt?: string;     // When the delegation expires (ISO string)
   format?: string;        // Format of the imported delegation (e.g. "multibase-base64", "multibase-base64url", "storacha-cli")
+  revoked?: boolean;      // Whether this delegation has been revoked
+  revokedAt?: string;     // When it was revoked (ISO string)
+  revokedBy?: string;     // DID of who revoked it
 }
 
 export class UCANDelegationService {
@@ -444,6 +448,12 @@ export class UCANDelegationService {
   
   private async deleteWithDelegation(rootCid: string, delegationInfo: DelegationInfo): Promise<void> {
     try {
+      // Validate delegation before use
+      const validation = await this.validateDelegation(delegationInfo);
+      if (!validation.valid) {
+        throw new Error(`Cannot delete: ${validation.reason}`);
+      }
+      
       // Parse the delegation using the helper method (tries ucanto first, then Storacha)
       const delegation = await this.parseDelegationProof(delegationInfo.proof);
       
@@ -652,6 +662,13 @@ export class UCANDelegationService {
    */
   private async listUploadsWithDelegation(delegationInfo: DelegationInfo): Promise<Array<{ root: string; shards?: string[]; insertedAt?: string; updatedAt?: string }>> {
     try {
+      // Validate delegation before use
+      const validation = await this.validateDelegation(delegationInfo);
+      if (!validation.valid) {
+        console.warn(`Cannot list uploads: ${validation.reason}`);
+        return []; // Return empty list instead of throwing
+      }
+      
       // Parse the delegation using the helper method (tries ucanto first, then Storacha)
       const delegation = await this.parseDelegationProof(delegationInfo.proof);
       
@@ -722,6 +739,12 @@ export class UCANDelegationService {
   private async uploadWithDelegation(file: File, delegationInfo: DelegationInfo): Promise<{ cid: string }> {
     try {
       console.log('Using delegation for upload:', delegationInfo.id);
+      
+      // Validate delegation before use
+      const validation = await this.validateDelegation(delegationInfo);
+      if (!validation.valid) {
+        throw new Error(`Cannot upload: ${validation.reason}`);
+      }
       
       // Parse the delegation using the helper method (tries ucanto first, then Storacha)
       console.log('Parsing delegation proof...');
@@ -1469,6 +1492,250 @@ export class UCANDelegationService {
       console.error('❌ Failed to recreate delegation:', error);
       throw error;
     }
+  }
+
+  /**
+   * Check if a delegation has been revoked by querying Storacha's revocation registry
+   * Uses caching to minimize API calls
+   * @param delegationCID The CID of the delegation to check
+   * @param forceRefresh Force a fresh check, bypassing cache
+   * @returns True if the delegation is revoked
+   */
+  async isDelegationRevoked(delegationCID: string, forceRefresh = false): Promise<boolean> {
+    const cacheKey = `revocation_${delegationCID}`;
+    const now = Date.now();
+    
+    // Check cache first (unless forcing refresh)
+    if (!forceRefresh) {
+      const cached = this.getRevocationCache(delegationCID);
+      if (cached && now - cached.checkedAt < 5 * 60 * 1000) { // Cache for 5 minutes
+        console.log(`Using cached revocation status for ${delegationCID}: ${cached.revoked}`);
+        return cached.revoked;
+      }
+    }
+    
+    try {
+      console.log(`Checking revocation status for delegation: ${delegationCID}`);
+      const response = await fetch(
+        `https://up.storacha.network/revocations/${delegationCID}`,
+        {
+          method: 'GET',
+          headers: {
+            'Accept': 'application/json'
+          }
+        }
+      );
+      
+      // If we get a 404, the delegation is not revoked
+      if (response.status === 404) {
+        this.setRevocationCache(delegationCID, false);
+        return false;
+      }
+      
+      if (!response.ok) {
+        console.warn(`Failed to check revocation status: ${response.status} ${response.statusText}`);
+        // If we can't check, assume not revoked (fail open for availability)
+        return false;
+      }
+      
+      const data = await response.json();
+      const isRevoked = data?.revoked === true || data?.status === 'revoked';
+      
+      // Cache the result
+      this.setRevocationCache(delegationCID, isRevoked);
+      
+      console.log(`Delegation ${delegationCID} revoked: ${isRevoked}`);
+      return isRevoked;
+      
+    } catch (error) {
+      console.error('Failed to check revocation status:', error);
+      // If we can't reach the server, fail open (assume not revoked)
+      return false;
+    }
+  }
+
+  /**
+   * Validate a delegation before use
+   * Checks both expiration and revocation status
+   * @param delegation The delegation to validate
+   * @returns True if the delegation is valid (not expired and not revoked)
+   */
+  async validateDelegation(delegation: DelegationInfo): Promise<{ valid: boolean; reason?: string }> {
+    // Check expiration
+    if (delegation.expiresAt) {
+      const expirationDate = new Date(delegation.expiresAt);
+      if (expirationDate < new Date()) {
+        console.warn(`Delegation ${delegation.id} has expired`);
+        return { valid: false, reason: 'Delegation has expired' };
+      }
+    }
+    
+    // Check revocation status
+    const isRevoked = await this.isDelegationRevoked(delegation.id);
+    if (isRevoked) {
+      console.warn(`Delegation ${delegation.id} has been revoked`);
+      return { valid: false, reason: 'Delegation has been revoked' };
+    }
+    
+    return { valid: true };
+  }
+
+  /**
+   * Revoke a delegation that you created
+   * This sends a revocation request to Storacha's service
+   * @param delegationCID The CID of the delegation to revoke
+   * @returns Success/error result
+   */
+  async revokeDelegation(delegationCID: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      console.log(`🔄 Revoking delegation: ${delegationCID}`);
+      
+      // Find the delegation in created delegations
+      const createdDelegations = this.getCreatedDelegations();
+      const delegation = createdDelegations.find(d => d.id === delegationCID);
+      
+      if (!delegation) {
+        return { success: false, error: 'Delegation not found in local store' };
+      }
+      
+      // Parse the delegation proof to get the actual delegation object
+      const parsedDelegation = await this.parseDelegationProof(delegation.proof);
+      
+      // Get the issuer principal (who created the delegation)
+      const issuer = await this.getWorkerPrincipal();
+      
+      console.log(`Issuer DID: ${issuer.did()}`);
+      console.log(`Delegation CID: ${parsedDelegation.cid.toString()}`);
+      
+      // Import required modules
+      const { invoke } = await import('@ucanto/core');
+      const UcantoClient = await import('@ucanto/client');
+      const { CAR, HTTP } = await import('@ucanto/transport');
+      
+      // Create the service principal (simple DID object)
+      // Note: We use a simple object with did() method instead of Verifier.parse()
+      // because Verifier.parse() only supports did:key, not did:web
+      // This pattern follows Storacha's agent.js implementation
+      const serviceID = {
+        did: () => 'did:web:up.storacha.network'
+      };
+      
+      // Create the revocation invocation
+      // Following Storacha's agent.js pattern
+      const revocationInvocation = await invoke({
+        issuer,
+        audience: serviceID,
+        capability: {
+          can: 'ucan/revoke',
+          with: issuer.did(),
+          nb: {
+            ucan: parsedDelegation.cid
+          }
+        },
+        proofs: [parsedDelegation] // Include the delegation being revoked as proof
+      });
+      
+      console.log('📤 Sending revocation invocation to Storacha...');
+      
+      // Create connection to Storacha service (following agent.js pattern)
+      const connection = UcantoClient.connect({
+        id: serviceID,
+        codec: CAR.outbound,
+        channel: HTTP.open({
+          url: new URL('https://up.storacha.network'),
+          method: 'POST',
+        }),
+      });
+      
+      // Execute the invocation through the connection
+      // Note: execute() returns an array of results, we want the first one
+      const results = await connection.execute(revocationInvocation);
+      const result = results[0];
+      
+      // Check if result exists and has out property
+      if (!result || !result.out) {
+        console.error('❌ Invalid response from Storacha:', results);
+        return { success: false, error: 'Invalid response from Storacha service' };
+      }
+      
+      if (result.out.error) {
+        console.error('❌ Revocation failed:', result.out.error);
+        return { success: false, error: result.out.error.message || 'Revocation failed' };
+      }
+      
+      console.log('✅ Delegation revoked successfully');
+      console.log('Response:', result.out);
+      
+      // Update local storage to mark as revoked
+      const updatedDelegations = createdDelegations.map(d => {
+        if (d.id === delegationCID) {
+          return {
+            ...d,
+            revoked: true,
+            revokedAt: new Date().toISOString(),
+            revokedBy: issuer.did()
+          };
+        }
+        return d;
+      });
+      
+      localStorage.setItem(STORAGE_KEYS.CREATED_DELEGATIONS, JSON.stringify(updatedDelegations));
+      
+      // Update revocation cache
+      this.setRevocationCache(delegationCID, true);
+      
+      return { success: true };
+      
+    } catch (error) {
+      console.error('❌ Revocation failed:', error);
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  /**
+   * Get revocation status from cache
+   */
+  private getRevocationCache(delegationCID: string): { revoked: boolean; checkedAt: number } | null {
+    const cache = localStorage.getItem(STORAGE_KEYS.REVOCATION_CACHE);
+    if (!cache) return null;
+    
+    try {
+      const cacheData = JSON.parse(cache);
+      return cacheData[delegationCID] || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Set revocation status in cache
+   */
+  private setRevocationCache(delegationCID: string, revoked: boolean): void {
+    const cache = localStorage.getItem(STORAGE_KEYS.REVOCATION_CACHE);
+    let cacheData: Record<string, { revoked: boolean; checkedAt: number }> = {};
+    
+    if (cache) {
+      try {
+        cacheData = JSON.parse(cache);
+      } catch {
+        cacheData = {};
+      }
+    }
+    
+    cacheData[delegationCID] = {
+      revoked,
+      checkedAt: Date.now()
+    };
+    
+    localStorage.setItem(STORAGE_KEYS.REVOCATION_CACHE, JSON.stringify(cacheData));
+  }
+
+  /**
+   * Clear revocation cache
+   */
+  clearRevocationCache(): void {
+    localStorage.removeItem(STORAGE_KEYS.REVOCATION_CACHE);
+    console.log('✅ Cleared revocation cache');
   }
 
   /**

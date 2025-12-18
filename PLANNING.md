@@ -4,11 +4,83 @@ This document outlines the planned evolution of the UCAN Upload Wall project tow
 
 ## Overview
 
-The project will evolve through three major phases:
+The project will evolve through four major phases:
 
+0. **UCAN Revocation** - Implement delegation revocation and lifecycle management (PRIORITY)
 1. **P-256 Integration** - Enable hardware-backed WebAuthn signing
 2. **Multi-Device DKG** - Distributed key generation across multiple devices
 3. **Production Hardening** - Security audits and deployment
+
+---
+
+## Phase 0: UCAN Revocation (Immediate Priority)
+
+**Goal**: Close the security gap by implementing delegation revocation and validation, enabling proper lifecycle management of UCAN delegations.
+
+### Why This Comes First
+
+**Critical Security Need**: The application currently creates and shares UCAN delegations, but has no way to revoke them. This means:
+- Lost or stolen devices retain permanent access
+- Mistakenly delegated permissions cannot be withdrawn
+- No defense against compromised delegations
+- Cannot enforce time-limited access policies
+
+This is a **security vulnerability** that must be addressed before any other major changes.
+
+### Roadmap
+
+- [ ] **Revocation API Implementation**
+  - [ ] Add `revokeDelegation()` method to `UCANDelegationService`
+  - [ ] Implement revocation invocation using `@storacha/capabilities/ucan`
+  - [ ] Send revocation requests to Storacha service (`did:web:up.storacha.network`)
+  - [ ] Handle revocation responses and error cases
+
+- [ ] **Revocation Status Checking**
+  - [ ] Implement `isDelegationRevoked()` using Storacha revocation registry
+  - [ ] Query `https://up.storacha.network/revocations/[CID]` API
+  - [ ] Add `validateDelegation()` to check expiration and revocation status
+  - [ ] Cache revocation checks to minimize API calls
+
+- [ ] **Pre-Operation Validation**
+  - [ ] Add revocation checks before upload operations
+  - [ ] Add revocation checks before list operations
+  - [ ] Add revocation checks before delete operations
+  - [ ] Return clear error messages when using revoked delegations
+
+- [ ] **User Interface**
+  - [ ] Add "Revoke" button to created delegations in `DelegationManager`
+  - [ ] Show revocation status badges (Active, Revoked, Expired) on delegation cards
+  - [ ] Add confirmation dialog when revoking ("This action cannot be undone")
+  - [ ] Visual indicators for revoked/expired delegations (red banner, strikethrough)
+  - [ ] Show revocation timestamp and revoker DID when applicable
+
+- [ ] **Testing & Documentation**
+  - [ ] Test revocation flow: create → share → revoke → verify blocked
+  - [ ] Test that issuer can revoke their created delegations
+  - [ ] Test that audience can revoke delegations they received
+  - [ ] Document revocation API in README
+  - [ ] Add revocation examples to user guide
+
+**Timeline**: 1-2 weeks
+
+**Benefits**:
+- 🔒 **Security**: Ability to revoke compromised or mistaken delegations
+- ✅ **Access Control**: Enforce time-limited access and permissions
+- 🛡️ **Risk Mitigation**: Reduce impact of lost/stolen devices
+- 📋 **Audit Trail**: Track delegation lifecycle and revocations
+- 🚀 **Production Ready**: Essential feature for real-world deployment
+
+**Technical Details**:
+- Works with existing Ed25519 DID implementation
+- Uses Storacha's built-in revocation registry
+- Revocation tracked by UCAN CID
+- Both issuer and audience can revoke
+- Revocations are permanent and cannot be undone
+
+**References**:
+- [Storacha Revocation API](https://github.com/storacha/upload-service/blob/main/packages/upload-api/src/ucan/revoke.js)
+- [Agent Revoke Implementation](https://github.com/storacha/upload-service/blob/main/packages/access-client/src/agent.js#L259)
+- Revocation Registry: `https://up.storacha.network/revocations/`
 
 ---
 
@@ -128,17 +200,20 @@ Device 1 (Browser)     Device 2 (Mobile)
 
 **Timeline**: 6-12 months after Phase 2
 
+**Dependencies**: Should be performed after Phase 0 (Revocation) and ideally after Phase 1 (P-256) or Phase 2 (DKG) depending on which features are implemented first.
+
 ---
 
 ## Contributing to the Roadmap
 
 Want to help accelerate this roadmap?
 
-1. **Test the P-256 Fork**: Try [NiKrause/ucanto p256 branch](https://github.com/NiKrause/ucanto/tree/p256)
-2. **Research DKG**: Investigate threshold signature schemes (FROST, GG20, etc.)
-3. **Review Code**: Help audit implementations
-4. **Documentation**: Improve technical documentation and guides
-5. **Integration Work**: Assist with Storacha P-256 integration
+1. **🔥 Priority: Implement Revocation** (Phase 0): Help build delegation revocation and validation
+2. **Test the P-256 Fork**: Try [NiKrause/ucanto p256 branch](https://github.com/NiKrause/ucanto/tree/p256)
+3. **Research DKG**: Investigate threshold signature schemes (FROST, GG20, etc.)
+4. **Review Code**: Help audit implementations
+5. **Documentation**: Improve technical documentation and guides
+6. **Integration Work**: Assist with Storacha P-256 integration
 
 ---
 
