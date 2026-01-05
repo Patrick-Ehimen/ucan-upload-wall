@@ -15,11 +15,6 @@ This directory contains detailed technical documentation for the UCAN Upload Wal
   - Expected UI behavior
   - Debugging tips and common issues
 
-- **[BUGFIX_DID_WEB_REVOCATION.md](./BUGFIX_DID_WEB_REVOCATION.md)** - Bug fixes
-  - did:web support issue resolution
-  - invoke import path correction
-  - Response array handling
-
 ### WebAuthn & Keystore Architecture (✅ Implemented)
 - **[WEBAUTHN_PRF_IMPLEMENTATION.md](./WEBAUTHN_PRF_IMPLEMENTATION.md)** - PRF Extension Guide
   - WebAuthn PRF extension with fallback to rawCredentialId
@@ -32,11 +27,6 @@ This directory contains detailed technical documentation for the UCAN Upload Wal
   - PRF seed derivation and storage model
   - Lifecycle diagrams and security analysis
   - FAQ and best practices
-
-- **[DOCUMENTATION_UPDATES.md](./DOCUMENTATION_UPDATES.md)** - Change Log
-  - Summary of PRF implementation documentation changes
-  - Before/after comparisons
-  - Security implications clarified
 
 ### Phase 1.5: Secure Credential Storage (📋 Planned)
 - **[SECURE_CREDENTIAL_STORAGE.md](./SECURE_CREDENTIAL_STORAGE.md)** - Architecture design
@@ -64,8 +54,8 @@ This directory contains detailed technical documentation for the UCAN Upload Wal
 
 | Topic | Status | Documents |
 |-------|--------|-----------|
-| Phase 0: Revocation | ✅ Complete | 3 docs |
-| WebAuthn & Keystore | ✅ Complete | 3 docs |
+| Phase 0: Revocation | ✅ Complete | 2 docs |
+| WebAuthn & Keystore | ✅ Complete | 2 docs |
 | Phase 1.5: Secure Storage | 📋 Planned | 1 design doc |
 | Phase 1: P-256 | 📋 Planned | TBD |
 | Phase 2: Multi-Device DKG | 📋 Planned | TBD |
@@ -78,7 +68,6 @@ This directory contains detailed technical documentation for the UCAN Upload Wal
 - [Keystore Architecture](./KEYSTORE_ARCHITECTURE.md)
 - [Phase 0 Revocation](./REVOCATION_IMPLEMENTATION.md)
 - [Phase 1.5 Secure Storage](./SECURE_CREDENTIAL_STORAGE.md)
-- [Bug Fix Reference](./BUGFIX_DID_WEB_REVOCATION.md)
 
 ### For Testers
 - [Revocation Testing Guide](./REVOCATION_QUICKSTART.md)
@@ -99,7 +88,7 @@ This documentation is actively maintained. When implementing new features:
 ---
 
 **Last Updated:** January 5, 2026  
-**Total Documents:** 9
+**Total Documents:** 5
 
 
 
