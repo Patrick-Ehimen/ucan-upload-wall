@@ -1,4 +1,4 @@
- 
+/// <reference lib="webworker" />
 
 import { derive as deriveEdSigner, encode as encodeEdSigner } from '@ucanto/principal/ed25519';
 
@@ -72,15 +72,15 @@ export interface KeystoreErrorResponse {
 
 export type KeystoreResponseMessage = KeystoreSuccessResponse | KeystoreErrorResponse;
 
-const ctx: DedicatedWorkerGlobalScope = self as unknown as DedicatedWorkerGlobalScope;
+declare const self: DedicatedWorkerGlobalScope;
 
 let ed25519KeyPair: CryptoKeyPair | null = null;
 let aesKey: CryptoKey | null = null;
 
-ctx.console.log('[ed25519-keystore.worker] 🧵 Worker started');
+console.log('[ed25519-keystore.worker] 🧵 Worker started');
 
 async function deriveAesKeyFromPrfSeed(prfSeed: ArrayBuffer): Promise<CryptoKey> {
-  ctx.console.log('[ed25519-keystore.worker] 🔐 Deriving AES key from PRF seed (HKDF-SHA-256)');
+  console.log('[ed25519-keystore.worker] 🔐 Deriving AES key from PRF seed (HKDF-SHA-256)');
 
   // Derive salt deterministically from PRF seed to ensure same seed → same AES key
   // This allows encrypted archives to be decrypted on subsequent runs
@@ -112,7 +112,7 @@ async function deriveAesKeyFromPrfSeed(prfSeed: ArrayBuffer): Promise<CryptoKey>
     ['encrypt', 'decrypt']
   );
 
-  ctx.console.log('[ed25519-keystore.worker] ✅ AES key derived');
+  console.log('[ed25519-keystore.worker] ✅ AES key derived');
   return derivedKey;
 }
 
@@ -123,21 +123,21 @@ async function handleMessage(event: MessageEvent<KeystoreRequestMessage>): Promi
   try {
     switch (msg.type) {
       case 'init': {
-        ctx.console.log('[ed25519-keystore.worker] ⚙️ init() called');
+        console.log('[ed25519-keystore.worker] ⚙️ init() called');
         aesKey = await deriveAesKeyFromPrfSeed(msg.prfSeed);
-        ctx.console.log('[ed25519-keystore.worker] ✅ init() complete');
-        ctx.postMessage({ id, ok: true } as KeystoreSuccessResponse);
+        console.log('[ed25519-keystore.worker] ✅ init() complete');
+        self.postMessage({ id, ok: true } as KeystoreSuccessResponse);
         break;
       }
 
       case 'generateKeypair': {
-        ctx.console.log('[ed25519-keystore.worker] 🔑 generateKeypair() called');
+        console.log('[ed25519-keystore.worker] 🔑 generateKeypair() called');
          
         ed25519KeyPair = await crypto.subtle.generateKey(
           { name: 'Ed25519' } as Algorithm,
           true,
           ['sign', 'verify']
-        );
+        ) as CryptoKeyPair;
 
         // Export public key (for DID) and private key bytes (for Ed25519Signer archive)
         const publicKeySpki = await crypto.subtle.exportKey('spki', ed25519KeyPair.publicKey);
@@ -151,8 +151,8 @@ async function handleMessage(event: MessageEvent<KeystoreRequestMessage>): Promi
         const encoded = encodeEdSigner(edSigner); // contains private + public with multicodec tags
         const archive = edSigner.toArchive();
 
-        ctx.console.log('[ed25519-keystore.worker] ✅ Ed25519 keypair generated and archived');
-        ctx.postMessage({
+        console.log('[ed25519-keystore.worker] ✅ Ed25519 keypair generated and archived');
+        self.postMessage({
           id,
           ok: true,
           result: {
@@ -168,7 +168,7 @@ async function handleMessage(event: MessageEvent<KeystoreRequestMessage>): Promi
         if (!aesKey) {
           throw new Error('Keystore not initialized: AES key missing');
         }
-        ctx.console.log('[ed25519-keystore.worker] 🔒 encrypt() called');
+        console.log('[ed25519-keystore.worker] 🔒 encrypt() called');
 
         const iv = crypto.getRandomValues(new Uint8Array(12));
         const ciphertext = await crypto.subtle.encrypt(
@@ -177,9 +177,9 @@ async function handleMessage(event: MessageEvent<KeystoreRequestMessage>): Promi
           msg.plaintext
         );
 
-        ctx.console.log('[ed25519-keystore.worker] ✅ encrypt() complete');
+        console.log('[ed25519-keystore.worker] ✅ encrypt() complete');
         const ivBuf = iv.buffer.slice(0);
-        ctx.postMessage(
+        self.postMessage(
           {
             id,
             ok: true,
@@ -194,7 +194,7 @@ async function handleMessage(event: MessageEvent<KeystoreRequestMessage>): Promi
         if (!aesKey) {
           throw new Error('Keystore not initialized: AES key missing');
         }
-        ctx.console.log('[ed25519-keystore.worker] 🔓 decrypt() called');
+        console.log('[ed25519-keystore.worker] 🔓 decrypt() called');
 
         const plaintext = await crypto.subtle.decrypt(
           { name: 'AES-GCM', iv: msg.iv },
@@ -202,8 +202,8 @@ async function handleMessage(event: MessageEvent<KeystoreRequestMessage>): Promi
           msg.ciphertext
         );
 
-        ctx.console.log('[ed25519-keystore.worker] ✅ decrypt() complete');
-        ctx.postMessage(
+        console.log('[ed25519-keystore.worker] ✅ decrypt() complete');
+        self.postMessage(
           {
             id,
             ok: true,
@@ -218,7 +218,7 @@ async function handleMessage(event: MessageEvent<KeystoreRequestMessage>): Promi
         if (!ed25519KeyPair) {
           throw new Error('Ed25519 keypair not generated yet');
         }
-        ctx.console.log('[ed25519-keystore.worker] ✍️ sign() called');
+        console.log('[ed25519-keystore.worker] ✍️ sign() called');
 
         const signature = await crypto.subtle.sign(
           { name: 'Ed25519' } as Algorithm,
@@ -226,8 +226,8 @@ async function handleMessage(event: MessageEvent<KeystoreRequestMessage>): Promi
           msg.data
         );
 
-        ctx.console.log('[ed25519-keystore.worker] ✅ sign() complete');
-        ctx.postMessage(
+        console.log('[ed25519-keystore.worker] ✅ sign() complete');
+        self.postMessage(
           {
             id,
             ok: true,
@@ -242,7 +242,7 @@ async function handleMessage(event: MessageEvent<KeystoreRequestMessage>): Promi
         if (!ed25519KeyPair) {
           throw new Error('Ed25519 keypair not generated yet');
         }
-        ctx.console.log('[ed25519-keystore.worker] ✅ verify() called');
+        console.log('[ed25519-keystore.worker] ✅ verify() called');
 
         const valid = await crypto.subtle.verify(
           { name: 'Ed25519' } as Algorithm,
@@ -251,8 +251,8 @@ async function handleMessage(event: MessageEvent<KeystoreRequestMessage>): Promi
           msg.data
         );
 
-        ctx.console.log('[ed25519-keystore.worker] ✅ verify() result:', valid);
-        ctx.postMessage({
+        console.log('[ed25519-keystore.worker] ✅ verify() result:', valid);
+        self.postMessage({
           id,
           ok: true,
           result: { valid }
@@ -268,8 +268,8 @@ async function handleMessage(event: MessageEvent<KeystoreRequestMessage>): Promi
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } catch (err: any) {
-    ctx.console.error('[ed25519-keystore.worker] ❌ Error handling message', msg.type, err);
-    ctx.postMessage({
+    console.error('[ed25519-keystore.worker] ❌ Error handling message', msg.type, err);
+    self.postMessage({
       id,
       ok: false,
       error: err instanceof Error ? err.message : String(err)
@@ -277,7 +277,7 @@ async function handleMessage(event: MessageEvent<KeystoreRequestMessage>): Promi
   }
 }
 
-ctx.onmessage = (event: MessageEvent) => {
+self.onmessage = (event: MessageEvent) => {
    
   handleMessage(event as MessageEvent<KeystoreRequestMessage>);
 };

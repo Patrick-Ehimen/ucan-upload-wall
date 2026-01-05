@@ -95,10 +95,12 @@ export class UCANDelegationService {
             const credentialInfo: WebAuthnCredentialInfo = JSON.parse(storedCredential);
             
             // Restore Uint8Array fields from stored data
-            credentialInfo.rawCredentialId = new Uint8Array(Object.values(credentialInfo.rawCredentialId as Record<string, number>));
+            if (!(credentialInfo.rawCredentialId instanceof Uint8Array)) {
+              credentialInfo.rawCredentialId = new Uint8Array(Object.values(credentialInfo.rawCredentialId));
+            }
             // Note: prfInput might exist, but prfSeed is never stored (security)
-            if (credentialInfo.prfInput) {
-              credentialInfo.prfInput = new Uint8Array(Object.values(credentialInfo.prfInput as Record<string, number>));
+            if (credentialInfo.prfInput && !(credentialInfo.prfInput instanceof Uint8Array)) {
+              credentialInfo.prfInput = new Uint8Array(Object.values(credentialInfo.prfInput));
             }
             
             // SECURITY: extractPrfSeed will now require WebAuthn re-authentication
@@ -149,10 +151,12 @@ export class UCANDelegationService {
       const credentialInfo: WebAuthnCredentialInfo = JSON.parse(storedCredential);
       
       // Restore Uint8Array fields from stored data
-      credentialInfo.rawCredentialId = new Uint8Array(Object.values(credentialInfo.rawCredentialId as Record<string, number>));
+      if (!(credentialInfo.rawCredentialId instanceof Uint8Array)) {
+        credentialInfo.rawCredentialId = new Uint8Array(Object.values(credentialInfo.rawCredentialId));
+      }
       // Note: prfInput might exist, but prfSeed is never stored (security)
-      if (credentialInfo.prfInput) {
-        credentialInfo.prfInput = new Uint8Array(Object.values(credentialInfo.prfInput as Record<string, number>));
+      if (credentialInfo.prfInput && !(credentialInfo.prfInput instanceof Uint8Array)) {
+        credentialInfo.prfInput = new Uint8Array(Object.values(credentialInfo.prfInput));
       }
       
       // SECURITY: extractPrfSeed will now require WebAuthn re-authentication
@@ -223,8 +227,8 @@ export class UCANDelegationService {
         
         // Restore PRF-related Uint8Array fields if present
         // Note: prfInput is stored (safe), but prfSeed is never stored (security)
-        if (credentialInfo.prfInput) {
-          credentialInfo.prfInput = new Uint8Array(Object.values(credentialInfo.prfInput as Record<string, number>));
+        if (credentialInfo.prfInput && !(credentialInfo.prfInput instanceof Uint8Array)) {
+          credentialInfo.prfInput = new Uint8Array(Object.values(credentialInfo.prfInput));
         }
 
         this.webauthnProvider = new WebAuthnDIDProvider(credentialInfo);
@@ -489,7 +493,8 @@ export class UCANDelegationService {
       }
       
       // Parse the delegation using the helper method (tries ucanto first, then Storacha)
-      const delegation = await this.parseDelegationProof(delegationInfo.proof);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const delegation = await this.parseDelegationProof(delegationInfo.proof) as any;
       
       const Client = await import('@storacha/client');
       const { StoreMemory } = await import('@storacha/client/stores/memory');
@@ -704,7 +709,8 @@ export class UCANDelegationService {
       }
       
       // Parse the delegation using the helper method (tries ucanto first, then Storacha)
-      const delegation = await this.parseDelegationProof(delegationInfo.proof);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const delegation = await this.parseDelegationProof(delegationInfo.proof) as any;
       
       // Import required modules
       const Client = await import('@storacha/client');
@@ -782,7 +788,8 @@ export class UCANDelegationService {
       
       // Parse the delegation using the helper method (tries ucanto first, then Storacha)
       console.log('Parsing delegation proof...');
-      const delegation = await this.parseDelegationProof(delegationInfo.proof);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const delegation = await this.parseDelegationProof(delegationInfo.proof) as any;
       console.log('✅ Delegation parsed for upload');
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       console.log('Delegation capabilities:', delegation.capabilities.map((c: any) => c.can).join(', '));
@@ -996,7 +1003,8 @@ export class UCANDelegationService {
       }
       
       // Convert to base64 and add multibase 'm' prefix (matching Storacha CLI format)
-      const buffer = carBytes.buffer;
+      // Create a new ArrayBuffer to ensure correct type
+      const buffer = new Uint8Array(carBytes).buffer;
       const carBase64 = 'm' + this.arrayBufferToBase64(buffer);
       
       console.log('✅ Delegation archived to CAR format, length:', carBase64.length);
@@ -1151,6 +1159,7 @@ export class UCANDelegationService {
         const issuerDid = typeof delegation.issuer.did === 'function'
           ? delegation.issuer.did()
           : delegation.issuer;
+        const issuerDidString = typeof issuerDid === 'string' ? issuerDid : issuerDid.did();
         
         console.log('Delegation audience:', audienceDid);
         console.log('Our DID:', ourDid);
@@ -1164,7 +1173,7 @@ export class UCANDelegationService {
         const capabilities = delegation.capabilities.map((cap: any) => cap.can || cap.capability || cap);
         
         // Generate default name if not provided
-        const defaultName = name || `Delegation from ${issuerDid.slice(0, 20)}... (${new Date().toLocaleDateString()})`;
+        const defaultName = name || `Delegation from ${issuerDidString.slice(0, 20)}... (${new Date().toLocaleDateString()})`;
         
         delegationInfo = {
           id: delegation.cid?.toString() || crypto.randomUUID(),
@@ -1632,7 +1641,8 @@ export class UCANDelegationService {
       }
       
       // Parse the delegation proof to get the actual delegation object
-      const parsedDelegation = await this.parseDelegationProof(delegation.proof);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const parsedDelegation = await this.parseDelegationProof(delegation.proof) as any;
       
       // Get the issuer principal (who created the delegation)
       const issuer = await this.getWorkerPrincipal();
@@ -1644,20 +1654,18 @@ export class UCANDelegationService {
       const { invoke } = await import('@ucanto/core');
       const UcantoClient = await import('@ucanto/client');
       const { CAR, HTTP } = await import('@ucanto/transport');
+      const { Verifier } = await import('@ucanto/principal');
       
-      // Create the service principal (simple DID object)
-      // Note: We use a simple object with did() method instead of Verifier.parse()
-      // because Verifier.parse() only supports did:key, not did:web
-      // This pattern follows Storacha's agent.js implementation
-      const serviceID = {
-        did: () => 'did:web:up.storacha.network'
-      };
+      // Parse the service DID properly
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const serviceID = Verifier.parse('did:web:up.storacha.network') as any;
       
       // Create the revocation invocation
       // Following Storacha's agent.js pattern
       const revocationInvocation = await invoke({
         issuer,
-        audience: serviceID,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        audience: serviceID as any,
         capability: {
           can: 'ucan/revoke',
           with: issuer.did(),
@@ -1665,19 +1673,22 @@ export class UCANDelegationService {
             ucan: parsedDelegation.cid
           }
         },
-        proofs: [parsedDelegation] // Include the delegation being revoked as proof
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        proofs: [parsedDelegation] as any // Include the delegation being revoked as proof
       });
       
       console.log('📤 Sending revocation invocation to Storacha...');
       
       // Create connection to Storacha service (following agent.js pattern)
       const connection = UcantoClient.connect({
-        id: serviceID,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        id: serviceID as any,
         codec: CAR.outbound,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         channel: HTTP.open({
           url: new URL('https://up.storacha.network'),
           method: 'POST',
-        }),
+        }) as any,
       });
       
       // Execute the invocation through the connection

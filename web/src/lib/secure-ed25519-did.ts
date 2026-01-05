@@ -45,7 +45,7 @@ export async function generateEd25519KeyPair(): Promise<{
       { name: 'Ed25519' } as Algorithm,
       true,
       ['sign', 'verify']
-    );
+    ) as CryptoKeyPair;
 
     const publicKeySpki = await crypto.subtle.exportKey('spki', keyPair.publicKey);
     const privateKeyPkcs8 = await crypto.subtle.exportKey('pkcs8', keyPair.privateKey);
@@ -110,20 +110,20 @@ function getKeystoreWorker(): Worker {
     );
 
     keystoreWorker.onmessage = (event: MessageEvent<KeystoreResponseMessage>) => {
-      const { id, ok, result, error } = event.data;
-      const pending = pendingRequests.get(id);
+      const response = event.data;
+      const pending = pendingRequests.get(response.id);
       if (!pending) {
-        console.warn('[secure-ed25519-did] ⚠️ Received response for unknown request id', id);
+        console.warn('[secure-ed25519-did] ⚠️ Received response for unknown request id', response.id);
         return;
       }
-      pendingRequests.delete(id);
+      pendingRequests.delete(response.id);
 
-      if (ok) {
-        console.log('[secure-ed25519-did] ✅ Worker response', { id, result });
-        pending.resolve(result);
+      if (response.ok) {
+        console.log('[secure-ed25519-did] ✅ Worker response', { id: response.id, result: response.result });
+        pending.resolve(response.result);
       } else {
-        console.error('[secure-ed25519-did] ❌ Worker error', { id, error });
-        pending.reject(new Error(error));
+        console.error('[secure-ed25519-did] ❌ Worker error', { id: response.id, error: response.error });
+        pending.reject(new Error(response.error));
       }
     };
 
@@ -143,11 +143,11 @@ async function sendKeystoreRequest<T extends KeystoreRequestMessage['type']>(
 
   console.log('[secure-ed25519-did] 📤 Sending worker request', { id, type });
 
-  const message: KeystoreRequestMessage = {
+  const message = {
     id,
     type,
     ...payload
-  };
+  } as KeystoreRequestMessage;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const promise = new Promise<any>((resolve, reject) => {
@@ -183,8 +183,8 @@ export async function initEd25519KeystoreWithPrfSeed(prfSeed: Uint8Array): Promi
 export async function generateWorkerEd25519DID(): Promise<{ publicKey: Uint8Array; did: string; archive: any }> {
   console.log('[secure-ed25519-did] 🔑 generateWorkerEd25519DID() called');
 
-  const result = await sendKeystoreRequest('generateKeypair', {});
-  const publicKey = new Uint8Array(result.publicKey as ArrayBuffer);
+  const result = await sendKeystoreRequest('generateKeypair', {}) as { publicKey: ArrayBuffer; archive: ArrayBuffer };
+  const publicKey = new Uint8Array(result.publicKey);
   const did = await createEd25519DID(publicKey);
   const archive = result.archive;
 
@@ -198,9 +198,9 @@ export async function generateWorkerEd25519DID(): Promise<{ publicKey: Uint8Arra
 export async function keystoreEncrypt(plaintext: Uint8Array): Promise<{ ciphertext: Uint8Array; iv: Uint8Array }> {
   console.log('[secure-ed25519-did] 🔒 keystoreEncrypt() called', { length: plaintext.length });
 
-  const result = await sendKeystoreRequest('encrypt', { plaintext: plaintext.buffer as ArrayBuffer });
-  const ciphertext = new Uint8Array(result.ciphertext as ArrayBuffer);
-  const iv = new Uint8Array(result.iv as ArrayBuffer);
+  const result = await sendKeystoreRequest('encrypt', { plaintext: plaintext.buffer as ArrayBuffer }) as { ciphertext: ArrayBuffer; iv: ArrayBuffer };
+  const ciphertext = new Uint8Array(result.ciphertext);
+  const iv = new Uint8Array(result.iv);
 
   console.log('[secure-ed25519-did] ✅ keystoreEncrypt() complete', {
     ciphertextLength: ciphertext.length,
@@ -221,8 +221,8 @@ export async function keystoreDecrypt(ciphertext: Uint8Array, iv: Uint8Array): P
   const result = await sendKeystoreRequest('decrypt', {
     ciphertext: ciphertext.buffer as ArrayBuffer,
     iv: iv.buffer as ArrayBuffer
-  });
-  const plaintext = new Uint8Array(result.plaintext as ArrayBuffer);
+  }) as { plaintext: ArrayBuffer };
+  const plaintext = new Uint8Array(result.plaintext);
 
   console.log('[secure-ed25519-did] ✅ keystoreDecrypt() complete', { length: plaintext.length });
   return plaintext;
@@ -234,8 +234,8 @@ export async function keystoreDecrypt(ciphertext: Uint8Array, iv: Uint8Array): P
 export async function keystoreSign(data: Uint8Array): Promise<Uint8Array> {
   console.log('[secure-ed25519-did] ✍️ keystoreSign() called', { length: data.length });
 
-  const result = await sendKeystoreRequest('sign', { data: data.buffer as ArrayBuffer });
-  const signature = new Uint8Array(result.signature as ArrayBuffer);
+  const result = await sendKeystoreRequest('sign', { data: data.buffer as ArrayBuffer }) as { signature: ArrayBuffer };
+  const signature = new Uint8Array(result.signature);
 
   console.log('[secure-ed25519-did] ✅ keystoreSign() complete', { length: signature.length });
   return signature;

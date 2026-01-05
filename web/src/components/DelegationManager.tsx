@@ -9,7 +9,7 @@ interface DelegationManagerProps {
   onDelegationImported?: () => void;
 }
 
-export function DelegationManager({ delegationService, onDelegationImported }: DelegationManagerProps) {
+export function DelegationManager({ delegationService, onDidCreated, onDelegationImported }: DelegationManagerProps) {
   const [currentDID, setCurrentDID] = useState<string | null>(null);
   const [createdDelegations, setCreatedDelegations] = useState<DelegationInfo[]>([]);
   const [receivedDelegations, setReceivedDelegations] = useState<DelegationInfo[]>([]);

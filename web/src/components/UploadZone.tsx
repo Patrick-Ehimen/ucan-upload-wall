@@ -19,7 +19,6 @@ export function UploadZone({ onFileSelect, isUploading, delegationService, onDid
   const [webauthnSupported, setWebauthnSupported] = useState(false);
   const [copiedDID, setCopiedDID] = useState(false);
   const [encryptionSupported] = useState(false); // Currently always false - encryption handled in worker
-  const [encryptionMethod] = useState<'largeBlob' | 'hmac-secret'>('hmac-secret'); // Default method
 
   useEffect(() => {
     // Check WebAuthn support
@@ -36,7 +35,7 @@ export function UploadZone({ onFileSelect, isUploading, delegationService, onDid
       // Use encrypted keystore if supported, fallback to unencrypted
       if (encryptionSupported) {
         try {
-          await delegationService.initializeSecureEd25519DID(encryptionMethod, false);
+          await delegationService.initializeEd25519DID(false);
         } catch (encryptionError: unknown) {
           // Safari doesn't support encryption extensions - fall back to unencrypted
           console.warn('Hardware encryption failed, using unencrypted:', encryptionError instanceof Error ? encryptionError.message : String(encryptionError));
