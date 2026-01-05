@@ -319,7 +319,9 @@ test.describe('Encrypted Keystore', () => {
   });
 });
 
-test.describe('Extension Support Detection', () => {
+// Skipped: This test was for the old largeBlob/hmac-secret architecture
+// We now use WebAuthn PRF extension which cannot be tested with virtual authenticators
+test.describe.skip('Extension Support Detection (Deprecated)', () => {
   let context: BrowserContext;
   let page: Page;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
