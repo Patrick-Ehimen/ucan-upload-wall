@@ -1,5 +1,5 @@
 import { test, expect, BrowserContext, Page } from '@playwright/test';
-import { enableVirtualAuthenticator, disableVirtualAuthenticator } from './helpers/webauthn';
+import { enableVirtualAuthenticator, disableVirtualAuthenticator } from '../helpers/webauthn';
 
 /**
  * E2E Tests for Hardware-Protected Encrypted Keystore

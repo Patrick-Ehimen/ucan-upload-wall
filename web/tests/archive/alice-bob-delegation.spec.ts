@@ -1,5 +1,5 @@
 import { test, expect, Page, BrowserContext, chromium, CDPSession } from '@playwright/test';
-import { enableVirtualAuthenticator, disableVirtualAuthenticator } from './helpers/webauthn';
+import { enableVirtualAuthenticator, disableVirtualAuthenticator } from '../helpers/webauthn';
 
 // Launch a shared browser instance
 const browser = await chromium.launch({

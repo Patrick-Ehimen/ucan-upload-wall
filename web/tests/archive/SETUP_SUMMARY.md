@@ -145,7 +145,7 @@ Tests are looking for elements that may not exist or have different selectors:
 
 ```typescript
 import { test, expect, chromium } from '@playwright/test';
-import { enableVirtualAuthenticator } from './helpers/webauthn';
+import { enableVirtualAuthenticator } from '../helpers/webauthn';
 
 const browser = await chromium.launch({
   headless: process.env.HEADLESS === 'true',

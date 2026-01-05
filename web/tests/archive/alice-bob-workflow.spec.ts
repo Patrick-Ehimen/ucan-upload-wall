@@ -1,5 +1,5 @@
 import { test, expect, chromium, Browser, Page, BrowserContext, ConsoleMessage, CDPSession } from '@playwright/test';
-import { enableVirtualAuthenticator, disableVirtualAuthenticator } from './helpers/webauthn';
+import { enableVirtualAuthenticator, disableVirtualAuthenticator } from '../helpers/webauthn';
 import dotenv from 'dotenv';
 import * as Delegation from '@ucanto/core/delegation';
 
