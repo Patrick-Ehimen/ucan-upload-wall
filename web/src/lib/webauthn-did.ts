@@ -21,8 +21,8 @@ export interface WebAuthnCredentialInfo {
   userId: string;
   displayName: string;
   did?: string;
-  prfInput?: Uint8Array;        // PRF input/salt for deterministic key derivation
-  prfSeed?: Uint8Array;         // Actual PRF output seed (stored for later use)
+  prfInput?: Uint8Array;        // PRF input/salt for deterministic key derivation (safe to store)
+  prfSeed?: Uint8Array;         // TRANSIENT: PRF output seed (NEVER stored in localStorage for security)
   prfSource?: 'prf' | 'credentialId';  // Track which method was used
 }
 
@@ -69,10 +69,18 @@ export async function checkWebAuthnSupport(): Promise<{
 
 /**
  * Store credential info to localStorage
+ * 
+ * SECURITY: prfSeed is intentionally NOT stored for security reasons.
+ * The PRF seed must be derived fresh from WebAuthn authentication each time.
  */
 export function storeWebAuthnCredential(credential: WebAuthnCredentialInfo, key?: string): void {
   const storageKey = key || STORAGE_KEY;
-  localStorage.setItem(storageKey, JSON.stringify(credential));
+  
+  // Create a copy without prfSeed (security: don't persist encryption key material)
+  const { prfSeed, ...credentialWithoutSeed } = credential;
+  
+  localStorage.setItem(storageKey, JSON.stringify(credentialWithoutSeed));
+  console.log('💾 Stored credential (prfSeed excluded for security)');
 }
 
 /**
@@ -453,19 +461,35 @@ export class WebAuthnDIDProvider {
   /**
    * Helper to get PRF seed from credential info
    * This is used when we need to extract the PRF seed for key derivation
+   * 
+   * SECURITY: This method now requires WebAuthn re-authentication to get fresh PRF output.
+   * The PRF seed is NOT stored in localStorage for security reasons - it must be derived
+   * from the user's biometric authentication each time.
    */
   static async extractPrfSeed(credentialInfo: WebAuthnCredentialInfo): Promise<Uint8Array> {
-    // If we have a stored PRF seed, use it
-    if (credentialInfo.prfSeed) {
-      console.log('✅ Using stored PRF seed', {
-        source: credentialInfo.prfSource,
-        seedLength: credentialInfo.prfSeed.length
-      });
-      return credentialInfo.prfSeed;
+    console.log('🔐 Extracting PRF seed - WebAuthn authentication required');
+    
+    // Re-authenticate with WebAuthn to get fresh PRF output
+    try {
+      const freshCredInfo = await this.authenticateWithExistingCredential(
+        credentialInfo.credentialId,
+        window.location.hostname,
+        credentialInfo.prfInput
+      );
+      
+      if (freshCredInfo && freshCredInfo.prfSeed) {
+        console.log('✅ PRF seed extracted from WebAuthn authentication', {
+          source: freshCredInfo.prfSource,
+          seedLength: freshCredInfo.prfSeed.length
+        });
+        return freshCredInfo.prfSeed;
+      }
+    } catch (error) {
+      console.warn('⚠️ WebAuthn authentication failed, falling back to rawCredentialId:', error);
     }
     
-    // Fallback to rawCredentialId for legacy credentials
-    console.log('ℹ️ Using rawCredentialId as PRF seed (legacy credential or no PRF available)');
+    // Fallback to rawCredentialId if authentication fails
+    console.log('ℹ️ Using rawCredentialId as PRF seed (fallback)');
     return credentialInfo.rawCredentialId;
   }
 

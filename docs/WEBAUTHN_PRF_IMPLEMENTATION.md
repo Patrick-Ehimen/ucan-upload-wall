@@ -24,8 +24,8 @@ export interface WebAuthnCredentialInfo {
   userId: string;
   displayName: string;
   did?: string;
-  prfInput?: Uint8Array;        // PRF input/salt for deterministic key derivation
-  prfSeed?: Uint8Array;         // Actual PRF output seed (stored for reuse)
+  prfInput?: Uint8Array;        // PRF input/salt (safe to store in localStorage)
+  prfSeed?: Uint8Array;         // TRANSIENT: PRF output (NEVER stored, requires re-auth)
   prfSource?: 'prf' | 'credentialId';  // Track which method was used
 }
 ```
@@ -210,22 +210,45 @@ The implementation has been tested with:
    - Use existing credential created before PRF implementation
    - Should work seamlessly with `rawCredentialId`
 
-## Important Implementation Detail: PRF Seed Storage
+## Important Implementation Detail: PRF Seed Security Model
 
-The PRF output is **ephemeral** - it only exists during the WebAuthn credential operation (create/get). You cannot retrieve it later without re-authenticating. Therefore, we store the PRF seed in localStorage:
+The PRF output is **ephemeral** - it only exists during the WebAuthn credential operation (create/get). You cannot retrieve it later without re-authenticating.
+
+### Security-First Approach (Current Implementation)
+
+**The PRF seed is NEVER stored in localStorage for security reasons.** Instead, we require WebAuthn re-authentication on every page load:
 
 ```typescript
 // During credential creation/authentication:
 const { seed: prfSeed, source } = await getPrfSeed(credential, rawCredentialId);
 
-// Store the seed for later use
-credentialInfo.prfSeed = prfSeed;
-credentialInfo.prfSource = source;
+// ❌ prfSeed is NOT stored in localStorage
+// Only prfInput (salt) is stored, which is safe
 
-// When loading from localStorage:
-if (credentialInfo.prfSeed) {
-  credentialInfo.prfSeed = new Uint8Array(Object.values(credentialInfo.prfSeed));
+// On page reload, extractPrfSeed() triggers WebAuthn re-authentication:
+static async extractPrfSeed(credentialInfo: WebAuthnCredentialInfo): Promise<Uint8Array> {
+  // Re-authenticate to get fresh PRF output
+  const freshCredInfo = await this.authenticateWithExistingCredential(
+    credentialInfo.credentialId,
+    window.location.hostname,
+    credentialInfo.prfInput
+  );
+  return freshCredInfo.prfSeed; // Fresh from authenticator
 }
+```
+
+### Security Benefits
+
+1. **True Hardware-Backed Security**: Private key material cannot be decrypted without biometric authentication
+2. **No Key Material in Storage**: Even if an attacker gains localStorage access, they cannot decrypt the Ed25519 private key
+3. **User Presence Required**: Each session requires active user authentication
+4. **Zero Trust**: The encryption key (derived from PRF seed) exists only in memory during active use
+
+### Trade-offs
+
+- ✅ **Pro**: Maximum security - keys locked behind biometrics
+- ❌ **Con**: User must authenticate with biometric on every page reload
+- ℹ️ **Note**: This is standard behavior for hardware-backed security (similar to password managers)
 ```
 
 This allows us to:

@@ -10,7 +10,7 @@ import * as Proof from '@storacha/client/proof';
 import { StoreMemory } from '@storacha/client/stores/memory';
 import * as Ed25519Principal from '@ucanto/principal/ed25519';
 import type { Signer as UcanSigner, DID as UcanDID } from '@ucanto/interface';
-import { WebAuthnDIDProvider, WebAuthnCredentialInfo } from './webauthn-did';
+import { WebAuthnDIDProvider, WebAuthnCredentialInfo, storeWebAuthnCredential } from './webauthn-did';
 import {
   initEd25519KeystoreWithPrfSeed,
   generateWorkerEd25519DID,
@@ -96,10 +96,12 @@ export class UCANDelegationService {
             
             // Restore Uint8Array fields from stored data
             credentialInfo.rawCredentialId = new Uint8Array(Object.values(credentialInfo.rawCredentialId as Record<string, number>));
-            if (credentialInfo.prfSeed) {
-              credentialInfo.prfSeed = new Uint8Array(Object.values(credentialInfo.prfSeed as Record<string, number>));
+            // Note: prfInput might exist, but prfSeed is never stored (security)
+            if (credentialInfo.prfInput) {
+              credentialInfo.prfInput = new Uint8Array(Object.values(credentialInfo.prfInput as Record<string, number>));
             }
             
+            // SECURITY: extractPrfSeed will now require WebAuthn re-authentication
             const prfSeed = await WebAuthnDIDProvider.extractPrfSeed(credentialInfo);
             await initEd25519KeystoreWithPrfSeed(prfSeed);
             
@@ -148,11 +150,12 @@ export class UCANDelegationService {
       
       // Restore Uint8Array fields from stored data
       credentialInfo.rawCredentialId = new Uint8Array(Object.values(credentialInfo.rawCredentialId as Record<string, number>));
-      if (credentialInfo.prfSeed) {
-        credentialInfo.prfSeed = new Uint8Array(Object.values(credentialInfo.prfSeed as Record<string, number>));
+      // Note: prfInput might exist, but prfSeed is never stored (security)
+      if (credentialInfo.prfInput) {
+        credentialInfo.prfInput = new Uint8Array(Object.values(credentialInfo.prfInput as Record<string, number>));
       }
       
-      // Extract PRF seed using the new helper method
+      // SECURITY: extractPrfSeed will now require WebAuthn re-authentication
       prfSeed = await WebAuthnDIDProvider.extractPrfSeed(credentialInfo);
       
       console.log('Deriving worker keystore from WebAuthn PRF', {
@@ -219,11 +222,9 @@ export class UCANDelegationService {
         credentialInfo.publicKey.y = new Uint8Array(Object.values(credentialInfo.publicKey.y));
         
         // Restore PRF-related Uint8Array fields if present
+        // Note: prfInput is stored (safe), but prfSeed is never stored (security)
         if (credentialInfo.prfInput) {
           credentialInfo.prfInput = new Uint8Array(Object.values(credentialInfo.prfInput as Record<string, number>));
-        }
-        if (credentialInfo.prfSeed) {
-          credentialInfo.prfSeed = new Uint8Array(Object.values(credentialInfo.prfSeed as Record<string, number>));
         }
 
         this.webauthnProvider = new WebAuthnDIDProvider(credentialInfo);
@@ -255,8 +256,8 @@ export class UCANDelegationService {
       existingCredentialId: force ? null : existingCredentialId // Don't use existing if forcing new
     });
 
-    // Store credential info in localStorage
-    localStorage.setItem(STORAGE_KEYS.WEBAUTHN_CREDENTIAL, JSON.stringify(credentialInfo));
+    // Store credential info in localStorage (prfSeed excluded for security)
+    storeWebAuthnCredential(credentialInfo, STORAGE_KEYS.WEBAUTHN_CREDENTIAL);
 
     this.webauthnProvider = new WebAuthnDIDProvider(credentialInfo);
     console.log('✅ Created and stored new WebAuthn DID');

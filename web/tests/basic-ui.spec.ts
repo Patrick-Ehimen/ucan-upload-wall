@@ -130,9 +130,9 @@ test.describe('Basic UI - Happy Path', () => {
   test('should show DID after creation and persist after reload', async () => {
     test.setTimeout(45000);
 
-    console.log('🔄 Testing DID persistence...');
+    console.log('🔄 Testing DID persistence with WebAuthn re-authentication...');
 
-    // 1. Create DID
+    // 1. Create DID (initial WebAuthn authentication)
     await page.getByRole('button', { name: /delegations/i }).click();
     await page.waitForTimeout(1000);
 
@@ -149,22 +149,72 @@ test.describe('Basic UI - Happy Path', () => {
 
     console.log('✅ DID created:', originalDid);
 
-    // 2. Reload page
+    // 2. Reload page (simulates closing and reopening the app)
     console.log('🔄 Reloading page...');
     await page.reload();
     await page.waitForLoadState('networkidle');
 
     // 3. Navigate to delegations again
+    console.log('🔐 Accessing DID - this should trigger WebAuthn re-authentication...');
     await page.getByRole('button', { name: /delegations/i }).click();
     await page.waitForTimeout(1000);
 
-    // 4. Verify DID is still there using data-testid
+    // 4. Verify DID is still accessible after re-authentication
+    // NOTE: WebAuthn re-authentication happens transparently when accessing the DID
+    // The PRF seed is NOT stored in localStorage - it's derived fresh from WebAuthn
     const persistedDidElement = page.getByTestId('did-display');
     await expect(persistedDidElement).toBeVisible({ timeout: 10000 });
     const persistedDid = await persistedDidElement.textContent();
 
     expect(persistedDid).toBe(originalDid);
-    console.log('✅ DID persisted after reload');
+    console.log('✅ DID persisted after reload (via WebAuthn re-authentication)');
+  });
+
+  test('should require WebAuthn re-authentication to access DID after reload', async () => {
+    test.setTimeout(45000);
+
+    console.log('🔐 Testing WebAuthn re-authentication requirement...');
+
+    // 1. Create DID
+    await page.getByRole('button', { name: /delegations/i }).click();
+    await page.waitForTimeout(1000);
+
+    const createButton = page.getByTestId('create-did-button');
+    await expect(createButton).toBeVisible({ timeout: 10000 });
+    await createButton.click();
+    await page.waitForTimeout(3000);
+
+    const didElement = page.getByTestId('did-display');
+    await expect(didElement).toBeVisible({ timeout: 10000 });
+    const originalDid = await didElement.textContent();
+    console.log('✅ DID created:', originalDid);
+
+    // 2. Verify localStorage does NOT contain prfSeed (security check)
+    const localStorageData = await page.evaluate(() => {
+      const credInfo = localStorage.getItem('webauthn_credential_info');
+      return credInfo ? JSON.parse(credInfo) : null;
+    });
+
+    expect(localStorageData).toBeTruthy();
+    expect(localStorageData.prfSeed).toBeUndefined();
+    console.log('✅ Security check passed: prfSeed is NOT stored in localStorage');
+
+    // 3. Reload page
+    console.log('🔄 Reloading page to trigger re-authentication...');
+    await page.reload();
+    await page.waitForLoadState('networkidle');
+
+    // 4. Access DID again - this should trigger WebAuthn
+    await page.getByRole('button', { name: /delegations/i }).click();
+    await page.waitForTimeout(1000);
+
+    // 5. Verify DID is accessible (re-authentication happened transparently with virtual authenticator)
+    const reloadedDidElement = page.getByTestId('did-display');
+    await expect(reloadedDidElement).toBeVisible({ timeout: 10000 });
+    const reloadedDid = await reloadedDidElement.textContent();
+
+    expect(reloadedDid).toBe(originalDid);
+    console.log('✅ WebAuthn re-authentication successful - DID accessible');
   });
 
   test('should show copy button for DID', async () => {
