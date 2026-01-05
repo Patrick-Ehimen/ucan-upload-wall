@@ -2,76 +2,193 @@
 
 ## Overview
 
-This directory contains end-to-end tests for the UCAN Upload Wall application.
+Simple, focused end-to-end tests for the UCAN Upload Wall application.
 
 ## Test Files
 
-### `encrypted-keystore.spec.ts` ✅ **NEW - RECOMMENDED**
-**Focus:** Hardware-protected encrypted keystore functionality
+### `basic-ui.spec.ts` ✅ **ACTIVE**
 
-Tests the core security features:
-- Creating encrypted Ed25519 DID with biometric
-- Session lock/unlock flow after page refresh
-- Manual session locking via header button
-- Fallback to unencrypted mode
-- Extension support detection
+**Focus:** Core user interface functionality
 
-**Run:** `npm run test:e2e -- encrypted-keystore`
+**Tests:**
+- ✅ App loads without errors
+- ✅ Setup screen shows when no DID exists
+- ✅ User can create a DID
+- ✅ Navigation between tabs works
+- ✅ DID persists after page reload
+- ✅ Copy button is available
+- ✅ Error handling works
 
-**Why these tests:**
-- Focused on the encrypted keystore feature
-- Use virtual WebAuthn authenticator (no real biometric needed)
-- Fast (30-60 seconds total)
-- Test the security flow users will actually use
-- Don't require real Storacha credentials
+**Run:**
+```bash
+npm run test:e2e -- basic-ui
+```
 
-### `alice-bob-*.spec.ts` ⚠️ **LEGACY - NEEDS REWRITE**
+**Duration:** ~2 minutes for all tests
 
-The Alice/Bob tests are currently skipped/incomplete. They need to be rewritten to:
-- Use the new encrypted keystore
-- Mock Storacha API calls instead of requiring real credentials
-- Be simpler and more maintainable (currently 500-700 lines each)
+### `archive/` ⚠️ **ARCHIVED**
+
+Contains old/complex tests that were:
+- Too brittle or incomplete
+- Testing deprecated features
+- Requiring real API credentials
+
+See `archive/README.md` for details.
 
 ## Running Tests
 
 ```bash
-# Run new encrypted keystore tests only
-npm run test:e2e -- encrypted-keystore
+# Run all active tests
+npm run test:e2e
 
-# Run with browser visible
-HEADLESS=false npm run test:e2e -- encrypted-keystore
+# Run specific test file
+npm run test:e2e -- basic-ui
+
+# Run with visible browser
+npm run test:e2e:headed -- basic-ui
 
 # Debug mode
-npm run test:e2e:debug -- encrypted-keystore
+npm run test:e2e:debug -- basic-ui
 
-# UI mode (interactive)
+# Interactive UI mode
 npm run test:e2e:ui
 ```
 
-## Test Strategy
+## Test Philosophy
 
-The new `encrypted-keystore.spec.ts` tests focus on what matters most:
+### ✅ **DO:**
+- Test core user journeys
+- Keep tests simple and fast
+- Focus on what users actually do
+- Use virtual authenticators
+- Test error states
 
-1. **UI/UX**: Can users see and use encryption options?
-2. **Creation**: Does encrypted DID creation work?
-3. **Session Management**: Lock/unlock flow
-4. **Fallback**: Unencrypted mode still works
-5. **Security Indicators**: Users can see encryption status
-
-## Recommendations
-
-### ✅ DO:
-- Focus on `encrypted-keystore.spec.ts` for core functionality
-- Test error handling and edge cases
-- Test browser compatibility
-
-### ❌ DON'T:
-- Try to test full production workflow in E2E (too brittle)
-- Rely on real API credentials in CI/CD
+### ❌ **DON'T:**
 - Create 500+ line test files
+- Test every edge case in E2E (use unit tests)
+- Require real API credentials
+- Test implementation details
+
+## Writing New Tests
+
+Keep it simple:
+
+```typescript
+test('should do something users care about', async ({ page }) => {
+  // 1. Arrange - set up the scenario
+  await page.goto('/');
+  
+  // 2. Act - user performs action
+  await page.click('button');
+  
+  // 3. Assert - verify result
+  await expect(page.getByText('Success')).toBeVisible();
+});
+```
+
+## CI/CD Integration
+
+These tests are designed to run in CI:
+- ✅ No external dependencies
+- ✅ Virtual WebAuthn authenticator
+- ✅ Fast execution (~2 min total)
+- ✅ Deterministic results
+
+## Helpers
+
+### `helpers/webauthn.ts`
+
+Provides virtual WebAuthn authenticator setup for testing:
+
+```typescript
+import { enableVirtualAuthenticator } from './helpers/webauthn';
+
+const { client, authenticatorId } = await enableVirtualAuthenticator(context);
+```
+
+This allows WebAuthn to work in headless/automated mode without real biometric hardware.
+
+## Test Structure
+
+```
+tests/
+├── basic-ui.spec.ts        # ✅ Active: Core UI tests
+├── helpers/
+│   └── webauthn.ts         # WebAuthn test helpers
+├── archive/                # ⚠️ Archived: Old/incomplete tests
+│   ├── encrypted-keystore.spec.ts
+│   ├── alice-bob-delegation.spec.ts
+│   ├── alice-bob-workflow.spec.ts
+│   └── README.md           # Archive documentation
+└── README.md               # This file
+```
+
+## Adding New Tests
+
+When adding new tests:
+
+1. **Keep it simple** - Each test should test ONE thing
+2. **Use descriptive names** - `should create a DID successfully` not `test1`
+3. **Add console logs** - Help debugging when tests fail
+4. **Set reasonable timeouts** - 15-30 seconds max
+5. **Clean up** - Use `beforeEach` and `afterEach` hooks
+
+Example:
+
+```typescript
+test('should show error when network is offline', async () => {
+  test.setTimeout(20000);
+  
+  console.log('🔌 Testing offline behavior...');
+  
+  // Simulate offline
+  await context.setOffline(true);
+  
+  // Try to create DID
+  await page.getByRole('button', { name: /create/i }).click();
+  
+  // Verify error message
+  await expect(page.getByText(/network error/i)).toBeVisible();
+  
+  console.log('✅ Error shown correctly');
+});
+```
+
+## Troubleshooting
+
+### Tests failing locally?
+
+1. **Clear browser data:**
+   ```bash
+   rm -rf web/test-results/
+   ```
+
+2. **Update Playwright:**
+   ```bash
+   npm run playwright:install
+   ```
+
+3. **Run in headed mode:**
+   ```bash
+   npm run test:e2e:headed -- basic-ui
+   ```
+
+### Tests timing out?
+
+- Check dev server is running on port 5173
+- Increase timeout: `test.setTimeout(30000)`
+- Add more `waitForTimeout()` calls
+
+### WebAuthn not working?
+
+- Virtual authenticator may not be enabled
+- Check `helpers/webauthn.ts` setup
+- Try running in Chromium only
 
 ## Next Steps
 
-1. Run `npm run test:e2e -- encrypted-keystore` to validate
-2. Add to CI/CD pipeline
-3. Consider rewriting Alice/Bob tests with mocks
+- [ ] Add tests for upload functionality
+- [ ] Add tests for delegation creation
+- [ ] Add tests for error boundaries
+- [ ] Add visual regression tests
+- [ ] Integrate into CI/CD pipeline
