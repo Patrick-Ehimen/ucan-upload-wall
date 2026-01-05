@@ -136,8 +136,6 @@ export function DelegationManager({ delegationService, onDelegationImported }: D
     try {
       await delegationService.importDelegation(importProof, delegationName || undefined);
       loadData();
-      const delegations = delegationService.getReceivedDelegations();
-      const latestDelegation = delegations[0]; // Most recently added
       setShowImportForm(false);
       setImportProof('');
       setDelegationName(''); // Clear the name field

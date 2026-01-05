@@ -655,7 +655,7 @@ export class WebAuthnDIDProvider {
   /**
    * Verify signature (placeholder - full verification would require crypto library)
    */
-  async verify(_signatureData: string): Promise<boolean> {
+  async verify(): Promise<boolean> {
     // This would require implementing ECDSA verification with P-256
     // For now, return true as verification is typically done server-side
     console.warn('WebAuthn signature verification not implemented client-side');

@@ -95,9 +95,9 @@ export class UCANDelegationService {
             const credentialInfo: WebAuthnCredentialInfo = JSON.parse(storedCredential);
             
             // Restore Uint8Array fields from stored data
-            credentialInfo.rawCredentialId = new Uint8Array(Object.values(credentialInfo.rawCredentialId as any));
+            credentialInfo.rawCredentialId = new Uint8Array(Object.values(credentialInfo.rawCredentialId as Record<string, number>));
             if (credentialInfo.prfSeed) {
-              credentialInfo.prfSeed = new Uint8Array(Object.values(credentialInfo.prfSeed as any));
+              credentialInfo.prfSeed = new Uint8Array(Object.values(credentialInfo.prfSeed as Record<string, number>));
             }
             
             const prfSeed = await WebAuthnDIDProvider.extractPrfSeed(credentialInfo);
@@ -147,9 +147,9 @@ export class UCANDelegationService {
       const credentialInfo: WebAuthnCredentialInfo = JSON.parse(storedCredential);
       
       // Restore Uint8Array fields from stored data
-      credentialInfo.rawCredentialId = new Uint8Array(Object.values(credentialInfo.rawCredentialId as any));
+      credentialInfo.rawCredentialId = new Uint8Array(Object.values(credentialInfo.rawCredentialId as Record<string, number>));
       if (credentialInfo.prfSeed) {
-        credentialInfo.prfSeed = new Uint8Array(Object.values(credentialInfo.prfSeed as any));
+        credentialInfo.prfSeed = new Uint8Array(Object.values(credentialInfo.prfSeed as Record<string, number>));
       }
       
       // Extract PRF seed using the new helper method
@@ -220,10 +220,10 @@ export class UCANDelegationService {
         
         // Restore PRF-related Uint8Array fields if present
         if (credentialInfo.prfInput) {
-          credentialInfo.prfInput = new Uint8Array(Object.values(credentialInfo.prfInput as any));
+          credentialInfo.prfInput = new Uint8Array(Object.values(credentialInfo.prfInput as Record<string, number>));
         }
         if (credentialInfo.prfSeed) {
-          credentialInfo.prfSeed = new Uint8Array(Object.values(credentialInfo.prfSeed as any));
+          credentialInfo.prfSeed = new Uint8Array(Object.values(credentialInfo.prfSeed as Record<string, number>));
         }
 
         this.webauthnProvider = new WebAuthnDIDProvider(credentialInfo);
@@ -288,7 +288,7 @@ export class UCANDelegationService {
    * @param proofString The delegation proof (multibase encoded)
    * @returns Parsed delegation object
    */
-  private async parseDelegationProof(proofString: string): Promise<any> {
+  private async parseDelegationProof(proofString: string): Promise<unknown> {
     // Normalize the proof: add 'm' prefix if not present
     let normalizedProof = proofString.trim();
     if (!normalizedProof.startsWith('m') && !normalizedProof.startsWith('u')) {
@@ -938,7 +938,7 @@ export class UCANDelegationService {
       const { Verifier } = await import('@ucanto/principal');
       
       // Create verifier for the target DID
-      const targetVerifier = Verifier.parse(toDid as any);
+      const targetVerifier = Verifier.parse(toDid as UcanDID);
       
       // Convert capability strings to proper UCAN capability objects
       const ucanCapabilities = capabilities
@@ -1535,7 +1535,6 @@ export class UCANDelegationService {
    * @returns True if the delegation is revoked
    */
   async isDelegationRevoked(delegationCID: string, forceRefresh = false): Promise<boolean> {
-    const cacheKey = `revocation_${delegationCID}`;
     const now = Date.now();
     
     // Check cache first (unless forcing refresh)

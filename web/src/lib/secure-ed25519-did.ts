@@ -41,9 +41,8 @@ export async function generateEd25519KeyPair(): Promise<{
 }> {
   try {
     // Use native Ed25519 support where available.
-     
     const keyPair = await crypto.subtle.generateKey(
-      { name: 'Ed25519' } as any,
+      { name: 'Ed25519' } as Algorithm,
       true,
       ['sign', 'verify']
     );
@@ -111,7 +110,7 @@ function getKeystoreWorker(): Worker {
     );
 
     keystoreWorker.onmessage = (event: MessageEvent<KeystoreResponseMessage>) => {
-      const { id, ok, result, error } = event.data as any;
+      const { id, ok, result, error } = event.data;
       const pending = pendingRequests.get(id);
       if (!pending) {
         console.warn('[secure-ed25519-did] ⚠️ Received response for unknown request id', id);
@@ -138,17 +137,16 @@ function getKeystoreWorker(): Worker {
 async function sendKeystoreRequest<T extends KeystoreRequestMessage['type']>(
   type: T,
   payload: Omit<Extract<KeystoreRequestMessage, { type: T }>, 'id' | 'type'>
-): Promise<any> {
+): Promise<unknown> {
   const worker = getKeystoreWorker();
   const id = nextRequestId++;
 
   console.log('[secure-ed25519-did] 📤 Sending worker request', { id, type });
 
-   
   const message: KeystoreRequestMessage = {
     id,
     type,
-    ...(payload as any)
+    ...payload
   };
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

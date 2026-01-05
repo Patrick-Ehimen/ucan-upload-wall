@@ -133,9 +133,8 @@ async function handleMessage(event: MessageEvent<KeystoreRequestMessage>): Promi
       case 'generateKeypair': {
         ctx.console.log('[ed25519-keystore.worker] 🔑 generateKeypair() called');
          
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         ed25519KeyPair = await crypto.subtle.generateKey(
-          { name: 'Ed25519' } as any,
+          { name: 'Ed25519' } as Algorithm,
           true,
           ['sign', 'verify']
         );
@@ -221,10 +220,8 @@ async function handleMessage(event: MessageEvent<KeystoreRequestMessage>): Promi
         }
         ctx.console.log('[ed25519-keystore.worker] ✍️ sign() called');
 
-         
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const signature = await crypto.subtle.sign(
-          { name: 'Ed25519' } as any,
+          { name: 'Ed25519' } as Algorithm,
           ed25519KeyPair.privateKey,
           msg.data
         );
@@ -247,9 +244,8 @@ async function handleMessage(event: MessageEvent<KeystoreRequestMessage>): Promi
         }
         ctx.console.log('[ed25519-keystore.worker] ✅ verify() called');
 
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const valid = await crypto.subtle.verify(
-          { name: 'Ed25519' } as any,
+          { name: 'Ed25519' } as Algorithm,
           ed25519KeyPair.publicKey,
           msg.signature,
           msg.data
