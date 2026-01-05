@@ -93,7 +93,14 @@ export class UCANDelegationService {
           const storedCredential = localStorage.getItem(STORAGE_KEYS.WEBAUTHN_CREDENTIAL);
           if (storedCredential) {
             const credentialInfo: WebAuthnCredentialInfo = JSON.parse(storedCredential);
-            const prfSeed = new Uint8Array(Object.values(credentialInfo.rawCredentialId as any));
+            
+            // Restore Uint8Array fields from stored data
+            credentialInfo.rawCredentialId = new Uint8Array(Object.values(credentialInfo.rawCredentialId as any));
+            if (credentialInfo.prfSeed) {
+              credentialInfo.prfSeed = new Uint8Array(Object.values(credentialInfo.prfSeed as any));
+            }
+            
+            const prfSeed = await WebAuthnDIDProvider.extractPrfSeed(credentialInfo);
             await initEd25519KeystoreWithPrfSeed(prfSeed);
             
             // Decrypt archive
@@ -138,17 +145,24 @@ export class UCANDelegationService {
     let prfSeed: Uint8Array;
     try {
       const credentialInfo: WebAuthnCredentialInfo = JSON.parse(storedCredential);
-      // rawCredentialId is stored as an object; convert back to Uint8Array
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      prfSeed = new Uint8Array(Object.values(credentialInfo.rawCredentialId as any));
+      
+      // Restore Uint8Array fields from stored data
+      credentialInfo.rawCredentialId = new Uint8Array(Object.values(credentialInfo.rawCredentialId as any));
+      if (credentialInfo.prfSeed) {
+        credentialInfo.prfSeed = new Uint8Array(Object.values(credentialInfo.prfSeed as any));
+      }
+      
+      // Extract PRF seed using the new helper method
+      prfSeed = await WebAuthnDIDProvider.extractPrfSeed(credentialInfo);
+      
+      console.log('Deriving worker keystore from WebAuthn PRF', {
+        prfSeedLength: prfSeed.length,
+        prfSource: credentialInfo.prfSource || 'credentialId (legacy)'
+      });
     } catch (error) {
       console.error('Failed to parse stored WebAuthn credential for PRF seed', error);
       throw new Error('Invalid stored WebAuthn credential; cannot derive PRF seed');
     }
-
-    console.log('Deriving worker keystore from WebAuthn PRF seed (rawCredentialId)', {
-      prfSeedLength: prfSeed.length
-    });
 
     await initEd25519KeystoreWithPrfSeed(prfSeed);
 
@@ -203,6 +217,14 @@ export class UCANDelegationService {
         credentialInfo.rawCredentialId = new Uint8Array(Object.values(credentialInfo.rawCredentialId));
         credentialInfo.publicKey.x = new Uint8Array(Object.values(credentialInfo.publicKey.x));
         credentialInfo.publicKey.y = new Uint8Array(Object.values(credentialInfo.publicKey.y));
+        
+        // Restore PRF-related Uint8Array fields if present
+        if (credentialInfo.prfInput) {
+          credentialInfo.prfInput = new Uint8Array(Object.values(credentialInfo.prfInput as any));
+        }
+        if (credentialInfo.prfSeed) {
+          credentialInfo.prfSeed = new Uint8Array(Object.values(credentialInfo.prfSeed as any));
+        }
 
         this.webauthnProvider = new WebAuthnDIDProvider(credentialInfo);
         console.log('✅ Successfully restored WebAuthn DID');

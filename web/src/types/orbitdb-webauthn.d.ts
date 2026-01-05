@@ -18,6 +18,9 @@ declare module '@le-space/orbitdb-identity-provider-webauthn-did' {
     userId: string;
     displayName: string;
     attestationObject?: Uint8Array;
+    prfInput?: Uint8Array;
+    prfSeed?: Uint8Array;
+    prfSource?: 'prf' | 'credentialId';
   }
 
   // WebAuthn DID Provider
