@@ -249,10 +249,10 @@ graph TB
         P256Start[WebAuthn P-256 Public Key<br/>33 bytes compressed]
         P256Decompress[Decompress to<br/>x: 32 bytes, y: 32 bytes]
         P256Uncompressed[Uncompressed Point<br/>0x04 + x + y<br/>65 bytes]
-        P256Multicodec[Add Multicodec Prefix<br/>0x1200 = P-256 public key<br/>[0x80, 0x24]]
+        P256Multicodec[Add Multicodec Prefix<br/>0x1200 = P-256 public key<br/>bytes: 0x80, 0x24]
         P256Multikey[Multikey<br/>multicodec + uncompressed<br/>67 bytes]
-        P256Base58[Base58btc Encode<br/>base58btc.encode(multikey)]
-        P256DID["did:key:zDna...<br/>(91 chars)"]
+        P256Base58[Base58btc Encode<br/>base58btc.encode multikey]
+        P256DID["did:key:zDna...<br/>91 chars"]
         
         P256Start --> P256Decompress
         P256Decompress --> P256Uncompressed
@@ -264,10 +264,10 @@ graph TB
     
     subgraph "Ed25519 DID Generation (Worker)"
         Ed25519Start[Ed25519 Public Key<br/>32 bytes]
-        Ed25519Multicodec[Add Multicodec Prefix<br/>0xed = Ed25519 public key<br/>[0xed, 0x01]]
+        Ed25519Multicodec[Add Multicodec Prefix<br/>0xed = Ed25519 public key<br/>bytes: 0xed, 0x01]
         Ed25519Multikey[Multikey<br/>multicodec + publicKey<br/>34 bytes]
-        Ed25519Base58[Base58btc Encode<br/>base58btc.encode(multikey)]
-        Ed25519DID["did:key:z6Mk...<br/>(48 chars)"]
+        Ed25519Base58[Base58btc Encode<br/>base58btc.encode multikey]
+        Ed25519DID["did:key:z6Mk...<br/>48 chars"]
         
         Ed25519Start --> Ed25519Multicodec
         Ed25519Multicodec --> Ed25519Multikey
