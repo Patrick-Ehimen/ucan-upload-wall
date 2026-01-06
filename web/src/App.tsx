@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
-import { Upload, Share, Download, Calendar, Clock, Trash2, RefreshCw } from 'lucide-react';
+import { Upload, Share, Download, Calendar, Clock, Trash2, RefreshCw, X } from 'lucide-react';
 import { Header } from './components/Header';
 import { UploadZone } from './components/UploadZone';
 import { Alert } from './components/Alert';
@@ -20,6 +20,9 @@ function App() {
   const [didCreated, setDidCreated] = useState(false);
   const { uploadFile, isUploading, error, delegationService } = useFileUpload();
   const [hasDeleteCapability, setHasDeleteCapability] = useState(false);
+  const [securityNoticeDismissed, setSecurityNoticeDismissed] = useState(() => {
+    return localStorage.getItem('security_notice_dismissed') === 'true';
+  });
   
   useEffect(() => {
     // Check if DID is available
@@ -194,6 +197,11 @@ function App() {
     }
   }, [delegationService]);
   
+  const handleDismissSecurityNotice = useCallback(() => {
+    setSecurityNoticeDismissed(true);
+    localStorage.setItem('security_notice_dismissed', 'true');
+  }, []);
+  
   const renderNavigation = () => {
     return (
       <nav className="bg-white border-b border-gray-200 mb-6">
@@ -244,12 +252,59 @@ function App() {
         return (
           <div className="max-w-7xl mx-auto px-6 py-12">
             <div className="flex flex-col items-center">
+              {/* Security Warning - Dismissible */}
+              {!securityNoticeDismissed && (
+                <div className="w-full max-w-3xl mb-8 bg-yellow-50 border-2 border-yellow-200 rounded-lg p-4 relative">
+                  <button
+                    onClick={handleDismissSecurityNotice}
+                    className="absolute top-3 right-3 text-yellow-600 hover:text-yellow-800 transition-colors"
+                    aria-label="Dismiss security notice"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                  <div className="flex items-start gap-3 pr-8">
+                    <div className="flex-shrink-0">
+                      <svg className="w-6 h-6 text-yellow-600 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                      </svg>
+                    </div>
+                    <div className="flex-1">
+                      <h3 className="text-sm font-semibold text-yellow-900 mb-1">⚠️ Security Notice</h3>
+                      <p className="text-sm text-yellow-800">
+                        This app has <strong>not been security audited</strong>. Malicious browser extensions can potentially steal key material from the web worker even the hardware key is protected and can't be extracted. 
+                        <strong className="block mt-1">→ Reduce risk: Use browsers with no extensions installed, or use on mobile devices.</strong>
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div className="text-center mb-12">
                 <h2 className="text-4xl font-bold text-gray-900 mb-3">
-                  Store it your way
+                  Decentralised File Backup
                 </h2>
                 <p className="text-lg text-gray-600 max-w-2xl">
-                  Upload files directly to the Storacha network with WebAuthn DID + UCAN authorization.
+                  on{' '}
+                  <a 
+                    href="https://filecoin.io" 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="font-semibold text-blue-600 hover:text-blue-800 border-b-2 border-dotted border-blue-400 transition-colors"
+                    title="Filecoin: Decentralized storage network for humanity's most important information"
+                  >
+                    Filecoin
+                  </a>
+                  {' '}via{' '}
+                  <a 
+                    href="https://storacha.network" 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="font-semibold text-blue-600 hover:text-blue-800 border-b-2 border-dotted border-blue-400 transition-colors"
+                    title="Storacha network: Uploads use centralized gateways for reliability. Downloads leverage the decentralized IPFS network for resilience and censorship resistance."
+                  >
+                    Storacha network
+                  </a>
+                  {' '}with WebAuthn DID + UCAN authorization.
                   Your data stays verifiable, private, and under your control — no servers, no intermediaries.
                 </p>
               </div>

@@ -45,9 +45,10 @@ A browser-only file upload application powered by **WebAuthn DIDs**, **worker-ba
 
 ### **WebAuthn DID (P-256)**
 - Hardware-secured identity using device biometrics (Face ID, Touch ID, Windows Hello)
-- P-256 elliptic curve cryptography
+- P-256 elliptic curve cryptography (WebAuthn also supports Ed25519)
 - DID format: `did:key:zDna...` (P-256 public key)
-- Used for: Initial authentication, delegation creation
+- Used for: Initial authentication, PRF seed derivation
+- **Note**: Cannot sign UCANs due to WebAuthn signature format (see [SECURITY.md](./SECURITY.md))
 
 ### **Worker-Based Ed25519 Keystore**
 - Ed25519 keypair generated in a dedicated web worker
@@ -231,15 +232,21 @@ This architecture is **fundamentally insecure** because:
 - localStorage is accessible to any code running in the same origin
 - Ed25519 private keys exist in software (JavaScript/WASM) memory
 
-### 🛡️ Secure Alternative
+### 🛡️ Secure Alternative (Not Possible with Current Web Standards)
 
-The **most secure approach** would be using **P-256 DIDs exclusively**, where private keys never leave hardware security modules (TPM/Secure Enclave). Unfortunately, Storacha currently only supports Ed25519.
+The **most secure approach** would be using **hardware-backed WebAuthn keys** (P-256 or Ed25519) where private keys never leave hardware security modules (TPM/Secure Enclave). 
 
-We have implemented P-256 support in our fork: **[NiKrause/ucanto (p256 branch)](https://github.com/NiKrause/ucanto/tree/p256)**
+**However, this is not possible** because:
+- WebAuthn signatures are wrapped in origin-bound format (`authenticatorData || hash(clientDataJSON)`)
+- UCAN requires raw signatures over payload bytes
+- This limitation applies to **both P-256 AND Ed25519** WebAuthn keys
+- No "raw signing mode" exists in [WebAuthn Level 3 specification](https://www.w3.org/TR/webauthn-3/)
 
-This needs to be integrated into **[storacha/upload-service](https://github.com/storacha/upload-service)** for production use.
+We have implemented P-256 signature **verification** in our fork: **[NiKrause/ucanto (p256 branch)](https://github.com/NiKrause/ucanto/tree/p256)**
 
-See **[SECURITY.md](./SECURITY.md)** for complete details.
+This would allow Storacha to accept P-256 DIDs, but **does not solve the WebAuthn signature format problem**.
+
+See **[SECURITY.md](./SECURITY.md)** for complete technical details and WebAuthn specification references.
 
 ### 🚀 Future: Multi-Device DKG
 
@@ -284,9 +291,22 @@ See **[PLANNING.md](./PLANNING.md)** for the complete roadmap and technical deta
 
 ## 🔗 Resources
 
-- [Storacha Documentation](https://docs.storacha.network/)
-- [UCAN Specification](https://github.com/ucan-wg/spec)
-- [WebAuthn Guide](https://webauthn.guide/)
+### Standards & Specifications
+- **[WebAuthn Level 3 (W3C)](https://www.w3.org/TR/webauthn-3/)** - Web Authentication API specification
+  - [§6.5.5 Authentication Assertion](https://www.w3.org/TR/webauthn-3/#sctn-op-get-assertion) - Signature format details
+  - [§6.5 CollectedClientData](https://www.w3.org/TR/webauthn-3/#dictdef-collectedclientdata) - Origin-bound data structure
+- **[UCAN Specification](https://github.com/ucan-wg/spec)** - User Controlled Authorization Networks
+- **[DID Key Method](https://w3c-ccg.github.io/did-method-key/)** - Decentralized Identifiers using public keys
+
+### Documentation & Guides
+- [Storacha Documentation](https://docs.storacha.network/) - Decentralized storage platform
+- [WebAuthn Guide](https://webauthn.guide/) - Interactive WebAuthn tutorial
+
+### Why WebAuthn Can't Sign UCANs
+
+WebAuthn (both P-256 and Ed25519) cannot produce raw signatures suitable for UCAN tokens due to the signature format specification. WebAuthn signs `authenticatorData || hash(clientDataJSON)` which includes origin, ceremony type, and other metadata - making signatures non-portable and incompatible with UCAN's requirement for raw cryptographic signatures.
+
+See **[SECURITY.md § WebAuthn UCAN Signing](./SECURITY.md#-webauthn-ucan-signing-why-its-not-possible)** for detailed technical explanation.
 
 ## 📚 Project Documentation
 
