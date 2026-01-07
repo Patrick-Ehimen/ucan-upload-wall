@@ -24,7 +24,7 @@ All sensitive data is stored in browser localStorage:
 - ⚠️ **Mixed Encryption at Rest**: 
   - localStorage itself stores data unencrypted on disk by the browser
   - Ed25519 private keys ARE encrypted (AES-GCM) before storage
-  - Storacha credentials (key, proof, spaceDID) stored in plain text
+  - alternative Storacha credentials (key, proof, spaceDID) stored in plain text
   - UCAN delegations and revocation cache stored in plain text
 - ❌ **Code Injection**: Malicious code can exfiltrate all credentials (encrypted or not)
 - ❌ **Physical Access**: Anyone with device access can read unencrypted localStorage data
@@ -43,24 +43,26 @@ All sensitive data is stored in browser localStorage:
 ┌─────────────────────────────────────────────────┐
 │ Tier 1: WebAuthn largeBlob (Hardware-Protected) │
 │ • Bootstrap data only (< 2KB)                   │
-│ • CID pointer to Storacha data                  │
-│ • Minimal read-only key                         │
+│ • CID pointer to IPFS data                      │
+│ • No Storacha credentials needed (Option B)     │
 │ • Requires biometric authentication             │
 └─────────────────────────────────────────────────┘
               ↓
 ┌─────────────────────────────────────────────────┐
-│ Tier 2: Storacha (Decentralized Storage)        │
+│ Tier 2: IPFS via Helia (Decentralized Storage)  │
 │ • Full encrypted credentials                    │
 │ • All UCAN delegations                          │
-│ • Configuration and metadata                    │
-│ • Encrypted before upload                       │
+│ • Local-first: checks local cache first         │
+│ • Offline-capable when data is cached           │
+│ • Falls back to IPFS network/gateways           │
+│ • Encrypted before upload to Storacha           │
 └─────────────────────────────────────────────────┘
               ↓
 ┌─────────────────────────────────────────────────┐
 │ Tier 3: localStorage (Cache Only)               │
 │ • Performance optimization                      │
 │ • Can be cleared without data loss              │
-│ • Rebuilt from Storacha on demand               │
+│ • Rebuilt from IPFS on demand                   │
 └─────────────────────────────────────────────────┘
 ```
 
@@ -169,6 +171,45 @@ async function readFromLargeBlob(): Promise<LargeBlobData | null> {
 
 ---
 
+## 🌐 IPFS via Helia: Local-First Content Addressing
+
+### Why Helia?
+
+Helia is a lean, modular JavaScript implementation of IPFS that runs in browsers and Node.js. Unlike traditional IPFS gateways:
+
+- ✅ **Local-First**: Checks local cache before network
+- ✅ **Offline-Capable**: Works offline if content is cached
+- ✅ **P2P Network**: Connects to decentralized IPFS swarm
+- ✅ **No Single Point of Failure**: Multiple fetch strategies
+- ✅ **Future-Proof**: Works with any IPFS-compatible system
+
+### Fetch Strategy Hierarchy
+
+```
+1. Helia Local Cache (offline capable)
+   ↓ (if not found)
+2. Helia IPFS Network (P2P, DHT, local nodes)
+   ↓ (if not found or timeout)
+3. Multiple HTTP Gateways (fallback)
+   - w3s.link (Storacha)
+   - ipfs.io (IPFS Foundation)
+   - dweb.link (Protocol Labs)
+   - cloudflare-ipfs.com
+   - localhost:8080 (if available)
+```
+
+### Benefits
+
+| Feature | Centralized Gateway | Helia + Multi-Gateway |
+|---------|-------------------|----------------------|
+| Offline Access | ❌ No | ✅ Yes (if cached) |
+| Censorship Resistant | ❌ Single point | ✅ Multiple sources |
+| Local Network | ❌ Internet only | ✅ LAN/local IPFS |
+| Performance | ⚠️ Variable | ✅ Local-first fast |
+| Decentralization | ❌ Centralized | ✅ Truly distributed |
+
+---
+
 ## 📦 Tier 2: Storacha Storage
 
 ### What to Store
@@ -246,24 +287,148 @@ async function uploadCredentialsToStoracha(
 ### Download Flow
 
 ```typescript
-async function downloadCredentialsFromStoracha(): Promise<StorachaCredentialsFile> {
+async function downloadCredentialsFromIPFS(): Promise<StorachaCredentialsFile> {
   // 1. Read CID from largeBlob
   const bootstrap = await readFromLargeBlob();
   if (!bootstrap) {
     throw new Error('No bootstrap data found');
   }
   
-  // 2. Fetch from Storacha using CID
-  const response = await fetch(
-    `https://w3s.link/ipfs/${bootstrap.storacha.credentialsCID}`
-  );
-  const encryptedData = await response.arrayBuffer();
+  const cid = CID.parse(bootstrap.storacha.credentialsCID);
+  
+  // 2. Fetch via Helia (local-first, falls back to network)
+  const encryptedData = await fetchViaHelia(cid);
   
   // 3. Decrypt using WebAuthn PRF-derived key
   const decryptionKey = await deriveEncryptionKeyFromWebAuthn();
   const decrypted = await decryptData(encryptedData, decryptionKey);
   
   return JSON.parse(decrypted);
+}
+
+// Helia-based fetch with fallback strategies
+async function fetchViaHelia(cid: CID): Promise<ArrayBuffer> {
+  try {
+    // Initialize Helia (cached singleton)
+    const helia = await getOrCreateHelia();
+    const fs = unixfs(helia);
+    
+    // Try local cache first (works offline)
+    try {
+      console.log('Fetching from Helia local cache...');
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of fs.cat(cid, { offline: true })) {
+        chunks.push(chunk);
+      }
+      console.log('✅ Found in local cache');
+      return concatenateChunks(chunks).buffer;
+    } catch (offlineError) {
+      // Not in cache, try network
+      console.log('Not in local cache, fetching from IPFS network...');
+    }
+    
+    // Fetch from IPFS network (DHT, peers, etc.)
+    const chunks: Uint8Array[] = [];
+    const timeout = setTimeout(() => {
+      throw new Error('Helia network fetch timeout');
+    }, 10000); // 10s timeout
+    
+    for await (const chunk of fs.cat(cid)) {
+      chunks.push(chunk);
+    }
+    clearTimeout(timeout);
+    
+    console.log('✅ Fetched from IPFS network');
+    return concatenateChunks(chunks).buffer;
+    
+  } catch (heliaError) {
+    // Fallback to HTTP gateways
+    console.warn('Helia fetch failed, trying HTTP gateways:', heliaError);
+    return await fetchViaGateways(cid);
+  }
+}
+
+// Multi-gateway fallback
+const IPFS_GATEWAYS = [
+  'https://w3s.link/ipfs',           // Storacha gateway
+  'https://dweb.link/ipfs',           // Protocol Labs
+  'https://ipfs.io/ipfs',             // IPFS Foundation
+  'https://cloudflare-ipfs.com/ipfs', // Cloudflare
+  'http://localhost:8080/ipfs',       // Local IPFS daemon
+];
+
+async function fetchViaGateways(
+  cid: CID,
+  timeout = 5000
+): Promise<ArrayBuffer> {
+  const cidString = cid.toString();
+  
+  // Race all gateways in parallel
+  const promises = IPFS_GATEWAYS.map(async (gateway) => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+    
+    try {
+      const response = await fetch(`${gateway}/${cidString}`, {
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      
+      console.log(`✅ Fetched from gateway: ${gateway}`);
+      return await response.arrayBuffer();
+    } catch (error) {
+      console.warn(`Gateway ${gateway} failed:`, error.message);
+      throw error;
+    }
+  });
+  
+  // Return first successful response
+  try {
+    return await Promise.any(promises);
+  } catch (aggregateError) {
+    throw new Error(
+      'All IPFS gateways failed. Check network connection.'
+    );
+  }
+}
+
+// Helia singleton manager
+let heliaInstance: Helia | null = null;
+
+async function getOrCreateHelia(): Promise<Helia> {
+  if (heliaInstance) {
+    return heliaInstance;
+  }
+  
+  const { createHelia } = await import('helia');
+  const { createLibp2p } = await import('libp2p');
+  
+  heliaInstance = await createHelia({
+    // Lightweight config for browser
+    libp2p: await createLibp2p({
+      // Minimal transports for browser
+      transports: [],
+      // Enable browser-compatible features
+    }),
+  });
+  
+  return heliaInstance;
+}
+
+// Utility to concatenate chunks
+function concatenateChunks(chunks: Uint8Array[]): Uint8Array {
+  const totalLength = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
+  const result = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return result;
 }
 ```
 
@@ -301,8 +466,8 @@ async function syncFromStoracha(force = false): Promise<void> {
   const isStale = Date.now() - cache._lastSync > 3600000;
   
   if (force || isStale || !cache.credentials) {
-    // Fetch fresh data from Storacha
-    const credentials = await downloadCredentialsFromStoracha();
+    // Fetch fresh data from IPFS via Helia
+    const credentials = await downloadCredentialsFromIPFS();
     
     // Update cache
     setLocalStorageCache({
@@ -352,7 +517,7 @@ async function syncFromStoracha(force = false): Promise<void> {
    ↓
 3. Check localStorage cache
    ├─ Cache valid? → Use cache
-   └─ Cache stale/missing? → Fetch from Storacha
+   └─ Cache stale/missing? → Fetch from IPFS (Helia → network → gateways)
    ↓
 4. Decrypt credentials with WebAuthn PRF
    ↓
@@ -472,7 +637,7 @@ First Setup:
 Subsequent Access:
 1. Authenticate (biometric)
 2. Read CID from largeBlob
-3. Fetch from Storacha
+3. Fetch from IPFS via Helia (local-first, fallback to gateways)
 4. Decrypt with WebAuthn PRF
 5. Full access restored
 ```
@@ -502,12 +667,17 @@ Subsequent Access:
 - [ ] Upload to Storacha
 - [ ] Store CID reference
 
-### Phase 4: Storacha Download (1-2 weeks)
+### Phase 4: IPFS Download via Helia (2-3 weeks)
 
+- [ ] Integrate Helia for local-first IPFS
+- [ ] Implement local cache checking (offline mode)
+- [ ] Add IPFS network fetching (DHT, peers)
+- [ ] Implement multi-gateway fallback
 - [ ] Fetch credentials by CID
 - [ ] Decrypt with WebAuthn PRF
 - [ ] Validate credential integrity
-- [ ] Handle network failures
+- [ ] Handle network failures gracefully
+- [ ] Add fetch performance metrics
 
 ### Phase 5: Cache Management (1 week)
 
@@ -523,6 +693,37 @@ Subsequent Access:
 - [ ] Upload to Storacha
 - [ ] Store CID in largeBlob
 - [ ] Verify migration success
+
+---
+
+## 📦 Dependencies
+
+### Required npm Packages
+
+```json
+{
+  "dependencies": {
+    "helia": "^4.0.0",
+    "@helia/unixfs": "^3.0.0",
+    "multiformats": "^13.0.0",
+    "libp2p": "^1.0.0"
+  }
+}
+```
+
+### Installation
+
+```bash
+npm install helia @helia/unixfs multiformats libp2p
+```
+
+### Bundle Size Considerations
+
+Helia adds ~200KB gzipped to bundle. Optimization strategies:
+- Lazy load Helia on first use
+- Use dynamic imports
+- Consider code-splitting for upload vs download paths
+- Evaluate tree-shaking opportunities
 
 ---
 
@@ -568,6 +769,10 @@ async function detectLargeBlobSupport(): Promise<boolean> {
    - Corrupted localStorage cache
    
 5. **Error Handling**
+   - Helia local cache hit (offline)
+   - Helia local cache miss (network fetch)
+   - IPFS network timeout (gateway fallback)
+   - All gateways fail (error state)
    - Storacha offline
    - Authentication failure
    - Decryption failure
@@ -590,10 +795,16 @@ async function detectLargeBlobSupport(): Promise<boolean> {
 - [MDN: largeBlob Extension](https://developer.mozilla.org/en-US/docs/Web/API/Web_Authentication_API/WebAuthn_extensions#largeblob)
 - [Chrome Platform Status: largeBlob](https://chromestatus.com/feature/5134801792098304)
 
+### IPFS & Helia
+- [Helia Documentation](https://helia.io/)
+- [Helia GitHub](https://github.com/ipfs/helia)
+- [UnixFS in Helia](https://github.com/ipfs/helia-unixfs)
+- [IPFS Content Addressing (CID)](https://docs.ipfs.tech/concepts/content-addressing/)
+- [IPFS Gateway Specification](https://specs.ipfs.tech/http-gateways/)
+
 ### Storacha
 - [Storacha Documentation](https://docs.storacha.network/)
 - [UCAN Specification](https://github.com/ucan-wg/spec)
-- [Content Addressing (CID)](https://docs.ipfs.tech/concepts/content-addressing/)
 
 ### Security
 - [WebAuthn Security Considerations](https://www.w3.org/TR/webauthn-3/#sctn-security-considerations)
@@ -604,4 +815,5 @@ async function detectLargeBlobSupport(): Promise<boolean> {
 **Status:** 📋 Planned (Phase 1.5 in PLANNING.md)  
 **Priority:** High (addresses critical localStorage vulnerabilities)  
 **Estimated Effort:** 8-12 weeks  
-**Date Created:** December 18, 2024
+**Date Created:** December 18, 2024  
+**Last Updated:** January 7, 2025 (Added Helia local-first IPFS architecture)
