@@ -18,10 +18,10 @@ import { delegate } from '@ucanto/core';
 
 // Import test context from upload-api
 // Note: This provides in-memory storage and services
-let createContext: any;
-let cleanupContext: any;
-let createServer: any;
-let connect: any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let createContext: (config?: any) => Promise<any>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let cleanupContext: (context: any) => Promise<void>;
 
 // Dynamic import for upload-api test utilities
 test.beforeAll(async () => {
@@ -30,10 +30,6 @@ test.beforeAll(async () => {
     const uploadApiHelpers = await import('@storacha/upload-api/test/context');
     createContext = uploadApiHelpers.createContext;
     cleanupContext = uploadApiHelpers.cleanupContext;
-    
-    const uploadApiCore = await import('@storacha/upload-api');
-    createServer = uploadApiCore.createServer;
-    connect = uploadApiCore.connect;
     
     console.log('✅ Upload-api test utilities loaded successfully');
   } catch (error) {
@@ -46,11 +42,15 @@ test.beforeAll(async () => {
 test.describe('Delegation and Upload Flow - E2E', () => {
   let context: BrowserContext;
   let page: Page;
-  let cdpSession: { client: any; authenticatorId: string };
+  let cdpSession: { client: unknown; authenticatorId: string };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let uploadServiceContext: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let spaceAgent: any; // The agent that owns the space
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let space: any; // The space identity
   let spaceDid: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let spaceProof: any;
 
   test.beforeEach(async ({ browser }) => {
@@ -379,7 +379,6 @@ test.describe('Delegation and Upload Flow - E2E', () => {
 
     // Create a test file
     const testFileContent = 'Hello from E2E test! ' + new Date().toISOString();
-    const testFile = new File([testFileContent], 'test-file.txt', { type: 'text/plain' });
 
     // Upload file using file input
     const fileInput = page.locator('input[type="file"]');
@@ -392,6 +391,7 @@ test.describe('Delegation and Upload Flow - E2E', () => {
       return dt;
     }, testFileContent);
     
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await fileInput.evaluateHandle((input: any, dt: any) => {
       input.files = dt.files;
       input.dispatchEvent(new Event('change', { bubbles: true }));
