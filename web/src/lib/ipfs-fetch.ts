@@ -11,18 +11,44 @@ const IPFS_BOOTSTRAP = [
   '/dnsaddr/bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ2wBb1jzYp5VCxQGtEex9kK',
 ];
 
-let heliaPromise: Promise<{ helia: unknown; fs: any }> | null = null;
+type HeliaBootstrap = { peerId: string; addrs: string[] };
+type GlobalHeliaOverrides = typeof globalThis & {
+  __HELIA_BOOTSTRAP__?: HeliaBootstrap;
+  __LAST_IPFS_BLOB_URL__?: string;
+};
+
+type Libp2pConnectionLike = {
+  remotePeer?: { toString?: () => string };
+};
+
+type Libp2pLike = {
+  dial: (peerId: unknown) => Promise<unknown>;
+  getConnections?: () => Libp2pConnectionLike[];
+  peerStore: {
+    patch: (peerId: unknown, options: { multiaddrs: unknown[] }) => Promise<void>;
+  };
+};
+
+type HeliaClient = {
+  libp2p: Libp2pLike;
+};
+
+type UnixFsLike = {
+  cat: (cid: unknown) => AsyncIterable<Uint8Array>;
+};
+
+let heliaPromise: Promise<{ helia: HeliaClient; fs: UnixFsLike }> | null = null;
 const HELIA_DIAL_TIMEOUT_MS = 10000;
 
-function logHeliaConnections(libp2p: any, context: string): void {
+function logHeliaConnections(libp2p: Libp2pLike | undefined, context: string): void {
   const connections = libp2p?.getConnections?.() ?? [];
   const peers = new Set(
-    connections.map((connection: any) => connection?.remotePeer?.toString?.() ?? 'unknown')
+    connections.map((connection) => connection?.remotePeer?.toString?.() ?? 'unknown')
   );
   console.log(`🟣 Helia ${context}: ${connections.length} connections (${peers.size} peers)`);
 }
 
-async function dialWithTimeout(libp2p: any, peerId: string): Promise<void> {
+async function dialWithTimeout(libp2p: Libp2pLike, peerId: string): Promise<void> {
   const { peerIdFromString } = await import('@libp2p/peer-id');
   await Promise.race([
     libp2p.dial(peerIdFromString(peerId)),
@@ -35,7 +61,7 @@ async function dialWithTimeout(libp2p: any, peerId: string): Promise<void> {
   ]);
 }
 
-async function getHeliaClient(): Promise<{ helia: unknown; fs: any }> {
+async function getHeliaClient(): Promise<{ helia: HeliaClient; fs: UnixFsLike }> {
   if (!heliaPromise) {
     heliaPromise = (async () => {
       const { createHelia } = await import('helia');
@@ -48,9 +74,7 @@ async function getHeliaClient(): Promise<{ helia: unknown; fs: any }> {
       const { identify } = await import('@libp2p/identify');
       const { ping } = await import('@libp2p/ping');
       const { kadDHT } = await import('@libp2p/kad-dht');
-      const heliaBootstrap = (globalThis as any).__HELIA_BOOTSTRAP__ as
-        | { peerId: string; addrs: string[] }
-        | undefined;
+      const heliaBootstrap = (globalThis as GlobalHeliaOverrides).__HELIA_BOOTSTRAP__;
       const libp2p = await createLibp2p({
         transports: [webSockets()],
         connectionEncrypters: [noise()],
@@ -139,7 +163,7 @@ async function fetchFromHelia(cid: string): Promise<Uint8Array> {
   const { helia, fs } = await getHeliaClient();
   const { CID } = await import('multiformats/cid');
   console.log(`🟣 Helia fs.cat started for ${cid}`);
-  logHeliaConnections((helia as any).libp2p, `before fs.cat ${cid}`);
+  logHeliaConnections(helia.libp2p, `before fs.cat ${cid}`);
   const chunks: Uint8Array[] = [];
   try {
     for await (const chunk of fs.cat(CID.parse(cid))) {
@@ -147,7 +171,7 @@ async function fetchFromHelia(cid: string): Promise<Uint8Array> {
     }
     const bytes = concatBytes(chunks);
     console.log(`🟣 Helia fs.cat completed for ${cid} (${bytes.length} bytes)`);
-    logHeliaConnections((helia as any).libp2p, `after fs.cat ${cid}`);
+    logHeliaConnections(helia.libp2p, `after fs.cat ${cid}`);
     return bytes;
   } catch (error) {
     console.warn(`🟣 Helia fs.cat failed for ${cid}:`, error);
@@ -186,7 +210,7 @@ export async function loadIpfsBlobUrl(
     const bytes = await fetchFromHelia(cid);
     const type = expectImage ? detectImageMime(bytes) : undefined;
     const url = URL.createObjectURL(new Blob([bytes], { type }));
-    (globalThis as any).__LAST_IPFS_BLOB_URL__ = url;
+    (globalThis as GlobalHeliaOverrides).__LAST_IPFS_BLOB_URL__ = url;
     console.log(`🟣 Helia blob URL created for ${cid}`);
     return { url, source: 'helia' };
   } catch (error) {

@@ -14,26 +14,57 @@ import http from 'node:http';
 import { test, expect, BrowserContext, Page } from '@playwright/test';
 import { enableVirtualAuthenticator, disableVirtualAuthenticator } from './helpers/webauthn';
 import * as ed25519 from '@ucanto/principal/ed25519';
-import { DID } from '@ucanto/interface';
 import { delegate, Message } from '@ucanto/core';
 import { createServer, handle } from '@storacha/upload-api';
 import { CAR } from '@ucanto/transport';
 import * as CARTransport from '@ucanto/transport/car';
 
+type ReceiptResult = { ok?: unknown; error?: unknown };
+
+type UploadApiContext = {
+  id: { did: () => string; toDIDKey: () => string };
+  agentStore: { receipts: { get: (taskCid: string) => Promise<ReceiptResult> } };
+  provisionsStorage: {
+    put: (args: {
+      cause: unknown;
+      consumer: string;
+      customer: string;
+      provider: string;
+    }) => Promise<void>;
+  };
+} & Record<string, unknown>;
+
+type CreateContext = (
+  config?: { requirePaymentPlan?: boolean; http?: typeof http } & Record<string, unknown>
+) => Promise<UploadApiContext>;
+
+type CleanupContext = (context: UploadApiContext) => Promise<void>;
+
+type EdSigner = Awaited<ReturnType<typeof ed25519.generate>>;
+type DelegationProof = Awaited<ReturnType<typeof delegate>>;
+
+type HeliaNode = {
+  libp2p: {
+    peerId?: { toString?: () => string };
+    getMultiaddrs: () => Array<{ toString: () => string }>;
+    contentRouting: { provide: (root: unknown) => Promise<void> };
+  };
+  blockstore: { put: (cid: unknown, bytes: Uint8Array) => Promise<void> };
+  stop: () => Promise<void>;
+};
+
 // Import test context from upload-api
 // Note: This provides in-memory storage and services
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let createContext: (config?: any) => Promise<any>;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let cleanupContext: (context: any) => Promise<void>;
+let createContext: CreateContext;
+let cleanupContext: CleanupContext;
 
 // Dynamic import for upload-api test utilities
 test.beforeAll(async () => {
   try {
     // Import from the exported test context path
     const uploadApiHelpers = await import('@storacha/upload-api/test/context');
-    createContext = uploadApiHelpers.createContext;
-    cleanupContext = uploadApiHelpers.cleanupContext;
+    createContext = uploadApiHelpers.createContext as CreateContext;
+    cleanupContext = uploadApiHelpers.cleanupContext as CleanupContext;
     
     console.log('✅ Upload-api test utilities loaded successfully');
   } catch (error) {
@@ -53,26 +84,19 @@ test.describe('Delegation and Upload Flow - E2E', () => {
   let context: BrowserContext;
   let page: Page;
   let cdpSession: { client: unknown; authenticatorId: string };
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let uploadServiceContext: any;
+  let uploadServiceContext: UploadApiContext | null = null;
   let uploadApiServer: http.Server | null = null;
   let uploadApiUrl: string | null = null;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let heliaNode: any | null = null;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let heliaUnixfs: any | null = null;
-  let heliaStartPromise: Promise<any> | null = null;
+  let heliaNode: HeliaNode | null = null;
+  let heliaStartPromise: Promise<HeliaNode> | null = null;
   let heliaWsMultiaddr: string | null = null;
   let heliaPeerId: string | null = null;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let spaceAgent: any; // The agent that owns the space
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let space: any; // The space identity
+  let spaceAgent: EdSigner; // The agent that owns the space
+  let space: EdSigner; // The space identity
   let spaceDid: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let spaceProof: any;
+  let spaceProof: DelegationProof;
 
-  async function ensureHelia() {
+  async function ensureHelia(): Promise<HeliaNode> {
     if (heliaNode) {
       return heliaNode;
     }
@@ -102,10 +126,10 @@ test.describe('Delegation and Upload Flow - E2E', () => {
             dht: kadDHT({ clientMode: false }),
           },
         });
-        const node = await createHelia({ libp2p });
-        heliaUnixfs = unixfs(node);
+        const node = (await createHelia({ libp2p })) as HeliaNode;
+        unixfs(node);
         heliaPeerId = node.libp2p.peerId?.toString?.() ?? null;
-        const addrs = node.libp2p.getMultiaddrs().map((addr: any) => addr.toString());
+        const addrs = node.libp2p.getMultiaddrs().map((addr) => addr.toString());
         heliaWsMultiaddr = addrs.find((addr) => addr.includes('/ws')) ?? null;
         if (!heliaWsMultiaddr || !heliaPeerId) {
           throw new Error('Failed to determine Helia WS multiaddr');
@@ -186,7 +210,9 @@ test.describe('Delegation and Upload Flow - E2E', () => {
     } as typeof http;
   }
 
-  async function startUploadApiServer(context: any): Promise<{ server: http.Server; url: string }> {
+  async function startUploadApiServer(
+    context: UploadApiContext
+  ): Promise<{ server: http.Server; url: string }> {
     const agent = createServer({ ...context, codec: CAR.inbound });
 
     const server = http.createServer(async (req, res) => {
@@ -362,12 +388,18 @@ test.describe('Delegation and Upload Flow - E2E', () => {
     // Provide service overrides before app boot
     await page.addInitScript(
       ({ url, did, heliaBootstrap }) => {
+        const globalOverrides = globalThis as typeof globalThis & {
+          __UPLOAD_SERVICE_URL__?: string;
+          __UPLOAD_SERVICE_DID__?: string;
+          __RECEIPTS_URL__?: string;
+          __HELIA_BOOTSTRAP__?: { peerId: string; addrs: string[] };
+        };
         if (url) {
-          (globalThis as any).__UPLOAD_SERVICE_URL__ = url;
-          (globalThis as any).__UPLOAD_SERVICE_DID__ = did;
-          (globalThis as any).__RECEIPTS_URL__ = `${url}/receipt/`;
+          globalOverrides.__UPLOAD_SERVICE_URL__ = url;
+          globalOverrides.__UPLOAD_SERVICE_DID__ = did;
+          globalOverrides.__RECEIPTS_URL__ = `${url}/receipt/`;
         }
-        (globalThis as any).__HELIA_BOOTSTRAP__ = heliaBootstrap;
+        globalOverrides.__HELIA_BOOTSTRAP__ = heliaBootstrap;
       },
       {
         url: uploadApiUrl,
@@ -412,7 +444,6 @@ test.describe('Delegation and Upload Flow - E2E', () => {
       await heliaNode.stop();
       heliaNode = null;
       heliaStartPromise = null;
-      heliaUnixfs = null;
       heliaWsMultiaddr = null;
       heliaPeerId = null;
       console.log('🟣 Helia node stopped');
@@ -711,10 +742,11 @@ test.describe('Delegation and Upload Flow - E2E', () => {
       return dt;
     }, testFileContent);
     
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await fileInput.evaluateHandle((input: any, dt: any) => {
-      input.files = dt.files;
-      input.dispatchEvent(new Event('change', { bubbles: true }));
+    await fileInput.evaluateHandle((input: unknown, dt: unknown) => {
+      const element = input as HTMLInputElement;
+      const dataTransfer = dt as DataTransfer;
+      element.files = dataTransfer.files;
+      element.dispatchEvent(new Event('change', { bubbles: true }));
     }, dataTransfer);
 
     await page.waitForTimeout(1000);
@@ -723,6 +755,9 @@ test.describe('Delegation and Upload Flow - E2E', () => {
     const uploadButton = page.getByRole('button', { name: /Upload to Storacha/i });
     await expect(uploadButton).toBeVisible({ timeout: 5000 });
     await uploadButton.click();
+
+    const uploadSuccessAlert = page.getByText(/Successfully uploaded test-file\.txt/i);
+    await expect(uploadSuccessAlert).toBeVisible({ timeout: 60000 });
 
     const uploadedHeading = page.getByRole('heading', { name: /Recently Uploaded Files/i });
     await expect(uploadedHeading).toBeVisible({ timeout: 60000 });
@@ -752,14 +787,18 @@ test.describe('Delegation and Upload Flow - E2E', () => {
 
     await page.waitForFunction(
       () => {
-        const url = (window as any).__LAST_IPFS_BLOB_URL__;
+        const win = window as typeof window & { __LAST_IPFS_BLOB_URL__?: string };
+        const url = win.__LAST_IPFS_BLOB_URL__;
         return typeof url === 'string' && url.startsWith('blob:');
       },
       null,
       { timeout: 60000 }
     );
 
-    const viewUrl = await page.evaluate(() => (window as any).__LAST_IPFS_BLOB_URL__);
+    const viewUrl = await page.evaluate(() => {
+      const win = window as typeof window & { __LAST_IPFS_BLOB_URL__?: string };
+      return win.__LAST_IPFS_BLOB_URL__;
+    });
     expect(viewUrl).toMatch(/^blob:/);
     await viewPage.close().catch(() => {});
     console.log('✅ View opened from Helia or gateway fallback');
