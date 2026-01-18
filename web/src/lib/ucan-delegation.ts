@@ -1838,7 +1838,7 @@ export class UCANDelegationService {
       const { Verifier } = await import('@ucanto/principal');
       
       // Parse the service DID properly
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       const serviceID = Verifier.parse(revocationDid as UcanDID);
       
       // Create the revocation invocation
